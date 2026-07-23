@@ -27,6 +27,15 @@ func TestCatalogResolverKeepsOneImmutableSnapshot(t *testing.T) {
 
 	assertResultCost(t, oldResolver.Calculate(subject), 1)
 	assertResultCost(t, newResolver.Calculate(subject), 2)
+	if oldResolver.ContentHash() != oldSnapshot.ContentHash() {
+		t.Fatalf("old resolver hash = %q, want %q", oldResolver.ContentHash(), oldSnapshot.ContentHash())
+	}
+	if newResolver.ContentHash() != newSnapshot.ContentHash() {
+		t.Fatalf("new resolver hash = %q, want %q", newResolver.ContentHash(), newSnapshot.ContentHash())
+	}
+	if oldResolver.ContentHash() == newResolver.ContentHash() {
+		t.Fatal("resolver hash did not change with its compiled pricing snapshot")
+	}
 	if catalog.Snapshot() != newSnapshot {
 		t.Fatal("expected catalog to publish the replacement snapshot")
 	}

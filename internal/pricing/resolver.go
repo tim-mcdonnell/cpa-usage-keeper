@@ -28,7 +28,8 @@ type CostResult struct {
 
 // Resolver 在创建时固定绑定一个 Snapshot，确保单个响应不会混用新旧价格。
 type Resolver struct {
-	snapshot *Snapshot
+	snapshot    *Snapshot
+	contentHash string
 }
 
 func (r Resolver) ActiveFields() ActiveFields {
@@ -36,6 +37,14 @@ func (r Resolver) ActiveFields() ActiveFields {
 		return 0
 	}
 	return r.snapshot.activeFields
+}
+
+// ContentHash 返回此 Resolver 固定绑定的价格快照哈希。
+func (r Resolver) ContentHash() string {
+	if r.contentHash == "" {
+		return sharedEmptySnapshot.contentHash
+	}
+	return r.contentHash
 }
 
 func (r Resolver) Calculate(subject CostSubject) CostResult {

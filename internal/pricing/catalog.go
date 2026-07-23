@@ -5,6 +5,7 @@ import "sync/atomic"
 var sharedEmptySnapshot = &Snapshot{
 	modelsByName: map[string]compiledModel{},
 	modelConfigs: []ModelConfig{},
+	contentHash:  canonicalSnapshotContentHash(nil),
 }
 
 // EmptySnapshot 返回可显式注入的只读空价格快照。
@@ -46,5 +47,9 @@ func (c *Catalog) Replace(snapshot *Snapshot) {
 }
 
 func (c *Catalog) NewResolver() Resolver {
-	return Resolver{snapshot: c.Snapshot()}
+	snapshot := c.Snapshot()
+	return Resolver{
+		snapshot:    snapshot,
+		contentHash: snapshot.ContentHash(),
+	}
 }
