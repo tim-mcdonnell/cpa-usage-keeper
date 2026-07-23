@@ -110,15 +110,22 @@ func normalizeClaudeQuotaRows(result ClaudeResult) []QuotaRow {
 	rows = appendClaudeWindowQuotaRow(rows, "seven_day_cowork", "7d Cowork", "window", result.Usage.SevenDayCowork)
 	rows = appendClaudeWindowQuotaRow(rows, "iguana_necktie", "Iguana Necktie", "window", result.Usage.IguanaNecktie)
 	if result.Usage.ExtraUsage != nil {
-		rows = append(rows, QuotaRow{
-			Key:         "extra_usage",
-			Label:       "Extra Usage",
-			Scope:       "extra_usage",
-			Used:        floatPtr(result.Usage.ExtraUsage.UsedCredits),
-			Limit:       floatPtr(result.Usage.ExtraUsage.MonthlyLimit),
-			UsedPercent: result.Usage.ExtraUsage.Utilization,
-			Allowed:     boolPtr(result.Usage.ExtraUsage.IsEnabled),
-		})
+		extra := result.Usage.ExtraUsage
+		row := QuotaRow{
+			Key:           "extra_usage",
+			StableLimitID: "extra_usage",
+			Label:         "Extra Usage",
+			Scope:         "extra_usage",
+			UsedPercent:   extra.Utilization,
+			Allowed:       boolPtr(extra.IsEnabled),
+		}
+		if !extra.rawPresenceKnown || extra.usedCreditsPresent {
+			row.Used = floatPtr(extra.UsedCredits)
+		}
+		if !extra.rawPresenceKnown || extra.monthlyLimitPresent {
+			row.Limit = floatPtr(extra.MonthlyLimit)
+		}
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -127,14 +134,25 @@ func appendClaudeWindowQuotaRow(rows []QuotaRow, key string, label string, scope
 	if window == nil {
 		return rows
 	}
+	var usedPercent *float64
+	percentSource := ""
+	if !window.rawPresenceKnown || window.utilizationPresent {
+		usedPercent = floatPtr(window.Utilization)
+		percentSource = QuotaPercentSourceReported
+	}
+	resetRaw := window.ResetsAt
+	if window.rawPresenceKnown {
+		resetRaw = window.resetsAtRaw
+	}
 	row := QuotaRow{
 		Key:           key,
+		StableLimitID: key,
 		Label:         label,
 		Scope:         scope,
-		UsedPercent:   floatPtr(window.Utilization),
+		UsedPercent:   usedPercent,
 		ResetAt:       window.ResetsAt,
-		ResetRaw:      window.ResetsAt,
-		PercentSource: QuotaPercentSourceReported,
+		ResetRaw:      resetRaw,
+		PercentSource: percentSource,
 	}
 	// Claude 只给官方语义明确的 5h 会话窗口和 seven_day 系列补 seconds，其它未知 key 不猜测。
 	if key == "five_hour" {
@@ -252,30 +270,46 @@ func appendCodexWindowQuotaRow(rows []QuotaRow, key string, label string, scope 
 		return rows
 	}
 	label = codexWindowLabel(key, label, window.LimitWindowSeconds)
+	var usedPercent *float64
+	percentSource := ""
+	if !window.rawPresenceKnown || window.usedPercentPresent {
+		usedPercent = floatPtr(window.UsedPercent)
+		percentSource = QuotaPercentSourceReported
+	}
 	row := QuotaRow{
 		Key:               key,
+		StableLimitID:     codexStableLimitID(key),
 		Label:             label,
 		Scope:             scope,
 		Metric:            metric,
-		UsedPercent:       floatPtr(window.UsedPercent),
+		UsedPercent:       usedPercent,
 		Allowed:           info.Allowed,
 		LimitReached:      info.LimitReached,
 		WindowUsageTokens: window.WindowUsageTokens,
 		WindowUsageCost:   window.WindowUsageCost,
-		PercentSource:     QuotaPercentSourceReported,
+		PercentSource:     percentSource,
 		WindowRole:        strings.ToLower(codexWindowRole(key)),
 	}
-	if window.LimitWindowSeconds != 0 {
+	if window.LimitWindowSeconds != 0 || (window.rawPresenceKnown && window.limitWindowSecondsPresent) {
 		row.Window = &QuotaWindow{Seconds: intPtr(window.LimitWindowSeconds)}
 	}
-	if window.ResetAfterSeconds != 0 {
+	if window.ResetAfterSeconds != 0 || (window.rawPresenceKnown && window.resetAfterSecondsPresent) {
 		row.ResetAfterSeconds = intPtr(window.ResetAfterSeconds)
 	}
-	if window.ResetAt != 0 {
+	if window.ResetAt != 0 || (window.rawPresenceKnown && window.resetAtPresent) {
 		row.ResetAt = timeutil.FormatStorageTime(time.Unix(window.ResetAt, 0))
-		row.ResetRaw = strconv.FormatInt(window.ResetAt, 10)
+		row.ResetRaw = window.resetAtRaw
+		if !window.rawPresenceKnown {
+			row.ResetRaw = strconv.FormatInt(window.ResetAt, 10)
+		}
 	}
 	return append(rows, row)
+}
+
+func codexStableLimitID(key string) string {
+	key = strings.TrimSuffix(key, ".primary_window")
+	key = strings.TrimSuffix(key, ".secondary_window")
+	return strings.TrimPrefix(key, "additional_rate_limits.")
 }
 
 func normalizeGeminiCLIQuotaRows(result GeminiCLIResult) []QuotaRow {
@@ -283,14 +317,28 @@ func normalizeGeminiCLIQuotaRows(result GeminiCLIResult) []QuotaRow {
 	rows := make([]QuotaRow, 0)
 	if result.Quota != nil {
 		for _, bucket := range result.Quota.Buckets {
+			var remaining *float64
+			if !bucket.rawPresenceKnown || bucket.remainingAmountPresent {
+				remaining = floatPtr(bucket.RemainingAmount)
+			}
+			var remainingFraction *float64
+			if !bucket.rawPresenceKnown || bucket.remainingFractionPresent {
+				remainingFraction = floatPtr(bucket.RemainingFraction)
+			}
+			resetRaw := bucket.ResetTime
+			if bucket.rawPresenceKnown {
+				resetRaw = bucket.resetTimeRaw
+			}
 			rows = append(rows, QuotaRow{
 				Key:               "bucket." + bucket.ModelID + "." + bucket.TokenType,
+				StableLimitID:     bucket.ModelID + "." + bucket.TokenType,
 				Label:             bucket.ModelID,
 				Scope:             "model",
 				Metric:            bucket.TokenType,
-				Remaining:         floatPtr(bucket.RemainingAmount),
-				RemainingFraction: floatPtr(bucket.RemainingFraction),
+				Remaining:         remaining,
+				RemainingFraction: remainingFraction,
 				ResetAt:           bucket.ResetTime,
+				ResetRaw:          resetRaw,
 			})
 		}
 	}
@@ -306,12 +354,18 @@ func appendGeminiCLICredits(rows []QuotaRow, keyPrefix string, tier *GeminiCliUs
 		return rows
 	}
 	for _, credit := range tier.AvailableCredits {
+		stableTierID := firstNonEmpty(tier.ID, keyPrefix)
+		var remaining *float64
+		if !credit.rawPresenceKnown || credit.creditAmountPresent {
+			remaining = floatPtr(credit.CreditAmount)
+		}
 		rows = append(rows, QuotaRow{
-			Key:       keyPrefix + "." + credit.CreditType,
-			Label:     "Code Assist Credit",
-			Scope:     "credits",
-			Metric:    credit.CreditType,
-			Remaining: floatPtr(credit.CreditAmount),
+			Key:           keyPrefix + "." + credit.CreditType,
+			StableLimitID: stableTierID + "." + credit.CreditType,
+			Label:         "Code Assist Credit",
+			Scope:         "credits",
+			Metric:        credit.CreditType,
+			Remaining:     remaining,
 		})
 	}
 	return rows
@@ -332,8 +386,9 @@ func normalizeAntigravityQuotaRows(result AntigravityResult) []QuotaRow {
 			}
 			label, metric, window := normalizeAntigravityQuotaWindow(bucket)
 			bucketKey := firstNonEmpty(bucket.BucketID, fmt.Sprintf("group-%d-bucket-%d", groupIndex+1, bucketIndex+1))
-			groupRows = append(groupRows, QuotaRow{
+			row := QuotaRow{
 				Key:               "bucket." + groupKey + "." + bucketKey,
+				StableLimitID:     bucket.BucketID,
 				Label:             label,
 				Scope:             "quota_group",
 				Metric:            metric,
@@ -343,7 +398,12 @@ func normalizeAntigravityQuotaRows(result AntigravityResult) []QuotaRow {
 				RemainingFraction: bucket.RemainingFraction,
 				Window:            window,
 				ResetAt:           bucket.ResetTime,
-			})
+				ResetRaw:          bucket.resetTimeRaw,
+			}
+			if row.ResetRaw == "" {
+				row.ResetRaw = bucket.ResetTime
+			}
+			groupRows = append(groupRows, row)
 		}
 		sort.SliceStable(groupRows, func(i, j int) bool {
 			return antigravityQuotaWindowOrder(groupRows[i].Metric) < antigravityQuotaWindowOrder(groupRows[j].Metric)
@@ -415,22 +475,33 @@ func normalizeKimiQuotaRows(result KimiResult) []QuotaRow {
 		label := firstNonEmpty(limit.Title, limit.Name, "Limit")
 		scope := firstNonEmpty(limit.Scope, "limit")
 		row := QuotaRow{
-			Key:       "limits." + keyName,
-			Label:     label,
-			Scope:     scope,
-			Metric:    limit.Name,
-			Used:      floatPtr(limit.Used),
-			Limit:     floatPtr(limit.Limit),
-			Remaining: floatPtr(limit.Remaining),
-			ResetAt:   firstNonEmpty(limit.ResetAt, resetAtFromKimiDetail(limit.Detail)),
+			Key:           "limits." + keyName,
+			StableLimitID: limit.Name,
+			Label:         label,
+			Scope:         scope,
+			Metric:        limit.Name,
+			ResetAt:       firstNonEmpty(limit.ResetAt, resetAtFromKimiDetail(limit.Detail)),
 		}
-		if limit.Limit > 0 {
+		if !limit.rawPresenceKnown || limit.usedPresent {
+			row.Used = floatPtr(limit.Used)
+		}
+		if !limit.rawPresenceKnown || limit.limitPresent {
+			row.Limit = floatPtr(limit.Limit)
+		}
+		if !limit.rawPresenceKnown || limit.remainingPresent {
+			row.Remaining = floatPtr(limit.Remaining)
+		}
+		row.ResetRaw = limit.ResetAt
+		if limit.rawPresenceKnown {
+			row.ResetRaw = limit.resetAtRaw
+		}
+		if row.Limit != nil && *row.Limit > 0 && row.Used != nil {
 			row.UsedPercent = floatPtr(limit.Used / limit.Limit * 100)
 			row.PercentSource = QuotaPercentSourceUsedLimit
 		}
-		if limit.ResetIn != 0 {
+		if limit.ResetIn != 0 || (limit.rawPresenceKnown && limit.resetInPresent) {
 			row.ResetAfterSeconds = intPtr(int64(limit.ResetIn))
-		} else if limit.Detail != nil && limit.Detail.ResetIn != 0 {
+		} else if limit.Detail != nil && (limit.Detail.ResetIn != 0 || (limit.Detail.rawPresenceKnown && limit.Detail.resetInPresent)) {
 			row.ResetAfterSeconds = intPtr(int64(limit.Detail.ResetIn))
 		}
 		row.Window = kimiWindow(limit)
@@ -465,17 +536,20 @@ func xaiWeeklyQuotaRow(config *XAIBillingConfig) (QuotaRow, bool) {
 	}
 	usedPercent := *config.CreditUsagePercent
 	limitReached := usedPercent >= 100
-	return QuotaRow{
-		Key:          "billing.weekly",
-		Label:        "Weekly",
-		Scope:        "billing",
-		Metric:       "weekly",
-		UsedPercent:  floatPtr(usedPercent),
-		Allowed:      boolPtr(!limitReached),
-		LimitReached: boolPtr(limitReached),
-		Window:       &QuotaWindow{Seconds: intPtr(quotaWindowSevenDaySeconds)},
-		ResetAt:      xaiWeeklyResetAt(config),
-	}, true
+	row := QuotaRow{
+		Key:           "billing.weekly",
+		StableLimitID: "weekly",
+		Label:         "Weekly",
+		Scope:         "billing",
+		Metric:        "weekly",
+		UsedPercent:   floatPtr(usedPercent),
+		Allowed:       boolPtr(!limitReached),
+		LimitReached:  boolPtr(limitReached),
+		Window:        &QuotaWindow{Seconds: intPtr(quotaWindowSevenDaySeconds)},
+		ResetAt:       xaiWeeklyResetAt(config),
+	}
+	row.ResetRaw = xaiWeeklyResetRaw(config)
+	return row, true
 }
 
 func xaiMonthlyQuotaRows(config *XAIBillingConfig) []QuotaRow {
@@ -494,12 +568,14 @@ func xaiMonthlyQuotaRows(config *XAIBillingConfig) []QuotaRow {
 	rows := make([]QuotaRow, 0, 2)
 	if hasMonthlyLimit || hasTotalUsed {
 		row := QuotaRow{
-			Key:     "billing.monthly",
-			Label:   "Monthly Spend",
-			Scope:   "billing",
-			Metric:  "usd_cents",
-			Window:  &QuotaWindow{Seconds: intPtr(quotaWindowThirtyDaySeconds)},
-			ResetAt: config.BillingPeriodEnd,
+			Key:           "billing.monthly",
+			StableLimitID: "monthly",
+			Label:         "Monthly Spend",
+			Scope:         "billing",
+			Metric:        "usd_cents",
+			Window:        &QuotaWindow{Seconds: intPtr(quotaWindowThirtyDaySeconds)},
+			ResetAt:       config.BillingPeriodEnd,
+			ResetRaw:      firstNonEmpty(config.billingPeriodEndRaw, config.BillingPeriodEnd),
 		}
 		if hasMonthlyLimit {
 			row.Limit = floatPtr(monthlyLimit)
@@ -527,13 +603,15 @@ func xaiMonthlyQuotaRows(config *XAIBillingConfig) []QuotaRow {
 
 	if hasOnDemandCap && onDemandCap > 0 {
 		row := QuotaRow{
-			Key:     "billing.on_demand",
-			Label:   "Pay-as-you-go",
-			Scope:   "billing",
-			Metric:  "usd_cents",
-			Limit:   floatPtr(onDemandCap),
-			Window:  &QuotaWindow{Seconds: intPtr(quotaWindowThirtyDaySeconds)},
-			ResetAt: config.BillingPeriodEnd,
+			Key:           "billing.on_demand",
+			StableLimitID: "on_demand",
+			Label:         "Pay-as-you-go",
+			Scope:         "billing",
+			Metric:        "usd_cents",
+			Limit:         floatPtr(onDemandCap),
+			Window:        &QuotaWindow{Seconds: intPtr(quotaWindowThirtyDaySeconds)},
+			ResetAt:       config.BillingPeriodEnd,
+			ResetRaw:      firstNonEmpty(config.billingPeriodEndRaw, config.BillingPeriodEnd),
 		}
 		if hasOnDemandUsed {
 			row.Used = floatPtr(onDemandUsed)
@@ -584,17 +662,20 @@ func xaiProductQuotaRows(config *XAIBillingConfig) []QuotaRow {
 	rows := make([]QuotaRow, 0, len(ordered))
 	for _, product := range ordered {
 		limitReached := product.usedPercent >= 100
-		rows = append(rows, QuotaRow{
-			Key:          "billing.weekly.product." + url.QueryEscape(product.normalizedName),
-			Label:        product.name + " Usage",
-			Scope:        "product",
-			Metric:       product.name,
-			UsedPercent:  floatPtr(product.usedPercent),
-			Allowed:      boolPtr(!limitReached),
-			LimitReached: boolPtr(limitReached),
-			Window:       &QuotaWindow{Seconds: intPtr(quotaWindowSevenDaySeconds)},
-			ResetAt:      xaiWeeklyResetAt(config),
-		})
+		row := QuotaRow{
+			Key:           "billing.weekly.product." + url.QueryEscape(product.normalizedName),
+			StableLimitID: product.normalizedName,
+			Label:         product.name + " Usage",
+			Scope:         "product",
+			Metric:        product.name,
+			UsedPercent:   floatPtr(product.usedPercent),
+			Allowed:       boolPtr(!limitReached),
+			LimitReached:  boolPtr(limitReached),
+			Window:        &QuotaWindow{Seconds: intPtr(quotaWindowSevenDaySeconds)},
+			ResetAt:       xaiWeeklyResetAt(config),
+		}
+		row.ResetRaw = xaiWeeklyResetRaw(config)
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -609,6 +690,16 @@ func xaiWeeklyResetAt(config *XAIBillingConfig) string {
 	return config.BillingPeriodEnd
 }
 
+func xaiWeeklyResetRaw(config *XAIBillingConfig) string {
+	if config == nil {
+		return ""
+	}
+	if config.CurrentPeriod != nil && strings.TrimSpace(config.CurrentPeriod.End) != "" {
+		return firstNonEmpty(config.CurrentPeriod.endRaw, config.CurrentPeriod.End)
+	}
+	return firstNonEmpty(config.billingPeriodEndRaw, config.BillingPeriodEnd)
+}
+
 func xaiMoneyValue(value XAIMoneyValue) (float64, bool) {
 	if value.Val == nil {
 		return 0, false
@@ -618,20 +709,31 @@ func xaiMoneyValue(value XAIMoneyValue) (float64, bool) {
 
 func kimiDetailQuotaRow(key string, scope string, fallbackLabel string, detail *KimiUsageDetail) QuotaRow {
 	row := QuotaRow{
-		Key:       key,
-		Label:     firstNonEmpty(detail.Title, fallbackLabel),
-		Scope:     scope,
-		Metric:    detail.Name,
-		Used:      floatPtr(detail.Used),
-		Limit:     floatPtr(detail.Limit),
-		Remaining: floatPtr(detail.Remaining),
-		ResetAt:   detail.ResetAt,
+		Key:           key,
+		StableLimitID: firstNonEmpty(detail.Name, key),
+		Label:         firstNonEmpty(detail.Title, fallbackLabel),
+		Scope:         scope,
+		Metric:        detail.Name,
+		ResetAt:       detail.ResetAt,
 	}
-	if detail.Limit > 0 {
+	if !detail.rawPresenceKnown || detail.usedPresent {
+		row.Used = floatPtr(detail.Used)
+	}
+	if !detail.rawPresenceKnown || detail.limitPresent {
+		row.Limit = floatPtr(detail.Limit)
+	}
+	if !detail.rawPresenceKnown || detail.remainingPresent {
+		row.Remaining = floatPtr(detail.Remaining)
+	}
+	row.ResetRaw = detail.ResetAt
+	if detail.rawPresenceKnown {
+		row.ResetRaw = detail.resetAtRaw
+	}
+	if row.Limit != nil && *row.Limit > 0 && row.Used != nil {
 		row.UsedPercent = floatPtr(detail.Used / detail.Limit * 100)
 		row.PercentSource = QuotaPercentSourceUsedLimit
 	}
-	if detail.ResetIn != 0 {
+	if detail.ResetIn != 0 || (detail.rawPresenceKnown && detail.resetInPresent) {
 		row.ResetAfterSeconds = intPtr(int64(detail.ResetIn))
 	}
 	return row
@@ -641,7 +743,10 @@ func isMeaningfulKimiDetail(detail *KimiUsageDetail) bool {
 	if detail == nil {
 		return false
 	}
-	return detail.Used != 0 || detail.Limit != 0 || detail.Remaining != 0 || detail.Name != "" || detail.Title != "" || detail.ResetAt != "" || detail.ResetIn != 0 || detail.TTL != 0
+	return detail.Used != 0 || detail.Limit != 0 || detail.Remaining != 0 ||
+		detail.usedPresent || detail.limitPresent || detail.remainingPresent ||
+		detail.Name != "" || detail.Title != "" || detail.ResetAt != "" ||
+		detail.ResetIn != 0 || detail.resetInPresent || detail.TTL != 0
 }
 
 func resetAtFromKimiDetail(detail *KimiUsageDetail) string {

@@ -45,7 +45,5 @@ type QuotaObservation struct {
 	TriggeringEventKey            *string  `json:"triggering_event_key"`
 	PricingSnapshotHash           string   `gorm:"not null" json:"pricing_snapshot_hash"`
 
-	// UsageEventWatermarkID 只服务录制 cheap gate，不属于外部观察事实接口。
-	UsageEventWatermarkID int64     `gorm:"not null;default:0" json:"-"`
-	CreatedAt             time.Time `gorm:"serializer:storageTime;not null" json:"created_at"`
+	CreatedAt time.Time `gorm:"serializer:storageTime;not null" json:"created_at"`
 }

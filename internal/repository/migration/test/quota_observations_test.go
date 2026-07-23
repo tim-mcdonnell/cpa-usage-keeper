@@ -97,14 +97,13 @@ func assertQuotaObservationSchema(t *testing.T, db *gorm.DB) {
 		"percent_source",
 		"attributed_cost_complete",
 		"pricing_snapshot_hash",
-		"usage_event_watermark_id",
 		"created_at",
 	} {
 		if columns[name].NotNull != 1 {
 			t.Errorf("expected %s to be NOT NULL, got %+v", name, columns[name])
 		}
 	}
-	for _, forbidden := range []string{"prompt", "response", "credential", "token_material", "raw_json"} {
+	for _, forbidden := range []string{"prompt", "response", "credential", "token_material", "raw_json", "percent_resolution"} {
 		if _, exists := columns[forbidden]; exists {
 			t.Fatalf("quota observations must not persist %s", forbidden)
 		}

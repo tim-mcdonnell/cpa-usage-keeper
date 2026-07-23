@@ -1631,7 +1631,16 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 		}
 	}()
 	close(start)
-	workers.Wait()
+	workersDone := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(workersDone)
+	}()
+	select {
+	case <-workersDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent usage, header, and refresh producers stalled")
+	}
 	close(errCh)
 	for err := range errCh {
 		t.Fatal(err)

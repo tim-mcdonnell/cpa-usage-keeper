@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,15 +35,28 @@ const (
 )
 
 // MaxUsageEventIDForCredential 使用 auth type 和 credential 的复合索引读取 cheap-gate watermark。
-func MaxUsageEventIDForCredential(ctx context.Context, db *gorm.DB, authType string, authIndex string) (int64, error) {
+func MaxUsageEventIDForCredential(
+	ctx context.Context,
+	db *gorm.DB,
+	authType string,
+	authIndex string,
+	afterID int64,
+	before time.Time,
+) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("database is nil")
 	}
 	var maxID int64
 	err := db.WithContext(contextOrBackground(ctx)).
 		Model(&entities.UsageEvent{}).
-		Select("COALESCE(MAX(id), 0)").
-		Where("auth_type = ? AND auth_index = ?", strings.TrimSpace(authType), strings.TrimSpace(authIndex)).
+		Select("COALESCE(MAX(id), ?)", afterID).
+		Where(
+			"auth_type = ? AND auth_index = ? AND id > ? AND timestamp < ?",
+			strings.TrimSpace(authType),
+			strings.TrimSpace(authIndex),
+			afterID,
+			timeutil.FormatStorageTime(before),
+		).
 		Scan(&maxID).Error
 	if err != nil {
 		return 0, fmt.Errorf("load quota observation usage event watermark: %w", err)
@@ -58,6 +72,7 @@ func SumQuotaAttributedUsage(
 	authIndex string,
 	start time.Time,
 	end time.Time,
+	watermark int64,
 	resolver pricing.Resolver,
 ) (QuotaAttributedUsage, error) {
 	result := QuotaAttributedUsage{
@@ -71,6 +86,9 @@ func SumQuotaAttributedUsage(
 	authIndex = strings.TrimSpace(authIndex)
 	if authType == "" || authIndex == "" {
 		return QuotaAttributedUsage{}, fmt.Errorf("auth_type and auth_index are required")
+	}
+	if watermark <= 0 {
+		return result, nil
 	}
 	start = timeutil.NormalizeStorageTime(start)
 	end = timeutil.NormalizeStorageTime(end)
@@ -99,11 +117,12 @@ func SumQuotaAttributedUsage(
 		Model(&entities.UsageEvent{}).
 		Select(selectClause).
 		Where(
-			"auth_type = ? AND auth_index = ? AND timestamp >= ? AND timestamp < ?",
+			"auth_type = ? AND auth_index = ? AND timestamp >= ? AND timestamp < ? AND id <= ?",
 			authType,
 			authIndex,
 			timeutil.FormatStorageTime(start),
 			timeutil.FormatStorageTime(end),
+			watermark,
 		).
 		Group(strings.Join(groupDimensions, ", ")).
 		Scan(&rows).Error
@@ -133,7 +152,7 @@ func SumQuotaAttributedUsage(
 			row.CacheCreationTokens,
 		))
 		result.CostUSD += cost.Cost.TotalCostUSD
-		if !cost.Available {
+		if !cost.Available || (row.TotalTokens > 0 && cost.MatchedModel == "") {
 			result.CostComplete = false
 		}
 	}
@@ -242,12 +261,56 @@ func quotaObservationResetChanged(previous entities.QuotaObservation, candidate 
 		if previous.ResetAt == nil || candidate.ResetAt == nil {
 			return true
 		}
-		return !previous.ResetAt.Equal(*candidate.ResetAt)
+		tolerance := max(
+			quotaObservationRepositoryDerivedResetTolerance(previous),
+			quotaObservationRepositoryDerivedResetTolerance(candidate),
+		)
+		return quotaObservationRepositoryAbsoluteDuration(previous.ResetAt.Sub(*candidate.ResetAt)) > tolerance
 	}
 	if !equalStringPointers(previous.ResetRaw, candidate.ResetRaw) {
 		return true
 	}
 	return !equalInt64Pointers(previous.ResetAfterSeconds, candidate.ResetAfterSeconds)
+}
+
+func quotaObservationRepositoryDerivedResetTolerance(observation entities.QuotaObservation) time.Duration {
+	if observation.ResetAt == nil ||
+		observation.ResetAfterSeconds == nil ||
+		quotaObservationRepositoryRawResetIsAbsolute(observation.ResetRaw) {
+		return 0
+	}
+	seconds := int64(0)
+	if observation.WindowSeconds != nil {
+		seconds = *observation.WindowSeconds
+	}
+	tolerance := 120 * time.Second
+	windowTolerance := time.Duration(float64(seconds) * 0.005 * float64(time.Second))
+	if windowTolerance > tolerance {
+		tolerance = windowTolerance
+	}
+	return min(tolerance, 30*time.Minute)
+}
+
+func quotaObservationRepositoryRawResetIsAbsolute(resetRaw *string) bool {
+	if resetRaw == nil {
+		return false
+	}
+	value := strings.TrimSpace(*resetRaw)
+	if value == "" {
+		return false
+	}
+	if _, err := timeutil.ParseStorageTime(value); err == nil {
+		return true
+	}
+	epoch, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && epoch > 0
+}
+
+func quotaObservationRepositoryAbsoluteDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func quotaObservationDayBounds(value time.Time) (time.Time, time.Time) {

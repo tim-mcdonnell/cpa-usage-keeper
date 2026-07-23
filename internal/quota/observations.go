@@ -54,8 +54,8 @@ type QuotaReading struct {
 }
 
 type quotaObservationStore interface {
-	MaxUsageEventID(context.Context, string, string) (int64, error)
-	SumAttributedUsage(context.Context, string, string, time.Time, time.Time, pricing.Resolver) (repository.QuotaAttributedUsage, error)
+	MaxUsageEventID(context.Context, string, string, int64, time.Time) (int64, error)
+	SumAttributedUsage(context.Context, string, string, time.Time, time.Time, int64, pricing.Resolver) (repository.QuotaAttributedUsage, error)
 	InsertIfDue(context.Context, entities.QuotaObservation, time.Duration, int64) (repository.QuotaObservationInsertResult, error)
 }
 
@@ -63,8 +63,8 @@ type repositoryQuotaObservationStore struct {
 	db *gorm.DB
 }
 
-func (s repositoryQuotaObservationStore) MaxUsageEventID(ctx context.Context, authType string, authIndex string) (int64, error) {
-	return repository.MaxUsageEventIDForCredential(ctx, s.db, authType, authIndex)
+func (s repositoryQuotaObservationStore) MaxUsageEventID(ctx context.Context, authType string, authIndex string, afterID int64, before time.Time) (int64, error) {
+	return repository.MaxUsageEventIDForCredential(ctx, s.db, authType, authIndex, afterID, before)
 }
 
 func (s repositoryQuotaObservationStore) SumAttributedUsage(
@@ -73,9 +73,10 @@ func (s repositoryQuotaObservationStore) SumAttributedUsage(
 	authIndex string,
 	start time.Time,
 	end time.Time,
+	watermark int64,
 	resolver pricing.Resolver,
 ) (repository.QuotaAttributedUsage, error) {
-	return repository.SumQuotaAttributedUsage(ctx, s.db, authType, authIndex, start, end, resolver)
+	return repository.SumQuotaAttributedUsage(ctx, s.db, authType, authIndex, start, end, watermark, resolver)
 }
 
 func (s repositoryQuotaObservationStore) InsertIfDue(
@@ -98,7 +99,14 @@ type quotaObservationRecordedState struct {
 	resetAt               *time.Time
 	resetRaw              *string
 	resetAfterSeconds     *int64
+	resetTolerance        time.Duration
 	usageEventWatermarkID int64
+}
+
+type quotaObservationAmbiguity struct {
+	rawKeys  []string
+	rawRoles []string
+	logged   bool
 }
 
 type quotaObservationRecorder struct {
@@ -184,6 +192,28 @@ func (r *quotaObservationRecorder) run() {
 	}
 }
 
+func quotaObservationAmbiguousZeroDurationWindowKinds(reading QuotaReading) map[string]quotaObservationAmbiguity {
+	candidates := make(map[string]quotaObservationAmbiguity)
+	counts := make(map[string]int)
+	for _, row := range reading.rows {
+		if seconds := quotaRowWindowSeconds(row); seconds != nil && *seconds > 0 {
+			continue
+		}
+		windowKindID := quotaWindowKindID(reading.provider, row)
+		ambiguity := candidates[windowKindID]
+		ambiguity.rawKeys = append(ambiguity.rawKeys, row.Key)
+		ambiguity.rawRoles = append(ambiguity.rawRoles, row.WindowRole)
+		candidates[windowKindID] = ambiguity
+		counts[windowKindID]++
+	}
+	for windowKindID, count := range counts {
+		if count < 2 {
+			delete(candidates, windowKindID)
+		}
+	}
+	return candidates
+}
+
 func (r *quotaObservationRecorder) record(
 	ctx context.Context,
 	reading QuotaReading,
@@ -193,8 +223,24 @@ func (r *quotaObservationRecorder) record(
 		return
 	}
 	authType := quotaObservationAuthType(reading.identity)
+	ambiguousWindowKinds := quotaObservationAmbiguousZeroDurationWindowKinds(reading)
 	for _, row := range reading.rows {
 		observation := newQuotaObservation(reading, authType, row)
+		if ambiguity, ambiguous := ambiguousWindowKinds[observation.WindowKindID]; ambiguous {
+			if !ambiguity.logged {
+				logrus.WithFields(logrus.Fields{
+					"provider":     observation.Provider,
+					"canonical_id": observation.WindowKindID,
+					"raw_keys":     ambiguity.rawKeys,
+					"raw_roles":    ambiguity.rawRoles,
+					"source":       observation.Source,
+					"observed_at":  observation.ObservedAt,
+				}).Warn("ambiguous zero-duration quota observation rows refused")
+				ambiguity.logged = true
+				ambiguousWindowKinds[observation.WindowKindID] = ambiguity
+			}
+			continue
+		}
 		key := quotaObservationSeriesKey{
 			usageIdentityID: observation.UsageIdentityID,
 			windowKindID:    observation.WindowKindID,
@@ -206,7 +252,13 @@ func (r *quotaObservationRecorder) record(
 		watermarkLoaded := false
 		if !accepted {
 			var err error
-			watermark, err = r.store.MaxUsageEventID(ctx, observation.AuthType, observation.AuthIndex)
+			watermark, err = r.store.MaxUsageEventID(
+				ctx,
+				observation.AuthType,
+				observation.AuthIndex,
+				previous.usageEventWatermarkID,
+				observation.ObservedAt,
+			)
 			if err != nil {
 				r.logFailure(observation, "load usage event watermark", err)
 				continue
@@ -221,6 +273,21 @@ func (r *quotaObservationRecorder) record(
 		if found && !resetChanged && reading.observedAt.Sub(previous.observedAt) < quotaObservationMinimumSpacing {
 			continue
 		}
+		if !watermarkLoaded {
+			var err error
+			watermark, err = r.store.MaxUsageEventID(
+				ctx,
+				observation.AuthType,
+				observation.AuthIndex,
+				previous.usageEventWatermarkID,
+				observation.ObservedAt,
+			)
+			if err != nil {
+				r.logFailure(observation, "load usage event watermark", err)
+				continue
+			}
+			watermarkLoaded = true
+		}
 
 		resolver := r.pricing.NewResolver()
 		if quotaObservationIsEstimable(observation) {
@@ -231,6 +298,7 @@ func (r *quotaObservationRecorder) record(
 					observation.AuthIndex,
 					start,
 					observation.ObservedAt,
+					watermark,
 					resolver,
 				)
 				if err != nil {
@@ -240,15 +308,6 @@ func (r *quotaObservationRecorder) record(
 				applyQuotaAttribution(&observation, attribution)
 			}
 		}
-		if !watermarkLoaded {
-			var err error
-			watermark, err = r.store.MaxUsageEventID(ctx, observation.AuthType, observation.AuthIndex)
-			if err != nil {
-				r.logFailure(observation, "load usage event watermark", err)
-				continue
-			}
-		}
-		observation.UsageEventWatermarkID = watermark
 		if observation.PricingSnapshotHash == "" {
 			observation.PricingSnapshotHash = resolver.ContentHash()
 		}
@@ -259,8 +318,12 @@ func (r *quotaObservationRecorder) record(
 			continue
 		}
 		switch result {
-		case repository.QuotaObservationInserted, repository.QuotaObservationSkipped:
-			states[key] = quotaObservationStateFromEntity(observation)
+		case repository.QuotaObservationInserted:
+			state := quotaObservationStateFromEntity(observation)
+			state.usageEventWatermarkID = watermark
+			states[key] = state
+		case repository.QuotaObservationSkipped:
+			// Candidate 未持久化，不能用它推进内存 gate 状态。
 		case repository.QuotaObservationDailyLimit:
 			logrus.WithFields(logrus.Fields{
 				"auth_index":     observation.AuthIndex,
@@ -366,19 +429,19 @@ func quotaWindowKindID(provider string, row QuotaRow) string {
 }
 
 func quotaWindowMeteredFeature(provider string, row QuotaRow) string {
-	key := strings.ToLower(strings.TrimSpace(row.Key))
+	limitID := strings.ToLower(strings.TrimSpace(row.StableLimitID))
 	switch provider {
 	case "codex":
 		switch {
-		case strings.HasPrefix(key, "rate_limit."):
+		case limitID == "rate_limit":
 			return quotaWindowFeatureOverall
-		case strings.HasPrefix(key, "code_review_rate_limit."):
+		case limitID == "code_review_rate_limit":
 			return "code_review"
-		case strings.HasPrefix(key, "additional_rate_limits."):
+		case limitID != "":
 			return quotaWindowKindComponent(firstNonEmpty(row.Metric, row.Scope), quotaWindowFeatureOverall)
 		}
 	case "claude":
-		switch key {
+		switch limitID {
 		case "five_hour", "seven_day":
 			return quotaWindowFeatureOverall
 		case "seven_day_cowork":
@@ -398,13 +461,11 @@ func quotaWindowMeteredFeature(provider string, row QuotaRow) string {
 }
 
 func quotaWindowStableLimitID(row QuotaRow) string {
-	key := strings.TrimSpace(row.Key)
-	key = strings.TrimSuffix(key, ".primary_window")
-	key = strings.TrimSuffix(key, ".secondary_window")
-	if key == "" {
+	limitID := strings.TrimSpace(row.StableLimitID)
+	if limitID == "" {
 		return quotaWindowLimitNone
 	}
-	return quotaWindowKindComponent(key, quotaWindowLimitNone)
+	return quotaWindowKindComponent(limitID, quotaWindowLimitNone)
 }
 
 func quotaWindowKindComponent(value string, fallback string) string {
@@ -486,7 +547,8 @@ func quotaRecordedResetChanged(previous quotaObservationRecordedState, candidate
 		if previous.resetAt == nil || candidate.ResetAt == nil {
 			return true
 		}
-		return !previous.resetAt.Equal(*candidate.ResetAt)
+		tolerance := max(previous.resetTolerance, quotaObservationDerivedResetTolerance(candidate))
+		return absoluteDuration(previous.resetAt.Sub(*candidate.ResetAt)) > tolerance
 	}
 	if !equalStringPointers(previous.resetRaw, candidate.ResetRaw) {
 		return true
@@ -496,13 +558,51 @@ func quotaRecordedResetChanged(previous quotaObservationRecordedState, candidate
 
 func quotaObservationStateFromEntity(observation entities.QuotaObservation) quotaObservationRecordedState {
 	return quotaObservationRecordedState{
-		observedAt:            observation.ObservedAt,
-		usedPercent:           cloneFloat64Pointer(observation.UsedPercent),
-		resetAt:               cloneTimePointer(observation.ResetAt),
-		resetRaw:              cloneStringPointer(observation.ResetRaw),
-		resetAfterSeconds:     cloneInt64Pointer(observation.ResetAfterSeconds),
-		usageEventWatermarkID: observation.UsageEventWatermarkID,
+		observedAt:        observation.ObservedAt,
+		usedPercent:       cloneFloat64Pointer(observation.UsedPercent),
+		resetAt:           cloneTimePointer(observation.ResetAt),
+		resetRaw:          cloneStringPointer(observation.ResetRaw),
+		resetAfterSeconds: cloneInt64Pointer(observation.ResetAfterSeconds),
+		resetTolerance:    quotaObservationDerivedResetTolerance(observation),
 	}
+}
+
+func quotaObservationDerivedResetTolerance(observation entities.QuotaObservation) time.Duration {
+	if observation.ResetAt == nil || observation.ResetAfterSeconds == nil || quotaObservationRawResetIsAbsolute(observation.ResetRaw) {
+		return 0
+	}
+	seconds := int64(0)
+	if observation.WindowSeconds != nil {
+		seconds = *observation.WindowSeconds
+	}
+	tolerance := 120 * time.Second
+	windowTolerance := time.Duration(float64(seconds) * 0.005 * float64(time.Second))
+	if windowTolerance > tolerance {
+		tolerance = windowTolerance
+	}
+	return min(tolerance, 30*time.Minute)
+}
+
+func quotaObservationRawResetIsAbsolute(resetRaw *string) bool {
+	if resetRaw == nil {
+		return false
+	}
+	value := strings.TrimSpace(*resetRaw)
+	if value == "" {
+		return false
+	}
+	if _, err := timeutil.ParseStorageTime(value); err == nil {
+		return true
+	}
+	epoch, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && epoch > 0
+}
+
+func absoluteDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func (s *Service) ListObservations(ctx context.Context, request ObservationSeriesRequest) (ObservationSeriesResponse, error) {

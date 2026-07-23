@@ -20,7 +20,6 @@ import (
 type ServiceOptions struct {
 	RefreshWorkerLimit               int
 	UsageHeaderSnapshotFlushInterval time.Duration
-	ObservationQueueSize             int
 	PricingCatalog                   *pricing.Catalog
 }
 
@@ -140,7 +139,7 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 	service.observationRecorder = newQuotaObservationRecorder(
 		repositoryQuotaObservationStore{db: db},
 		pricingCatalog,
-		options.ObservationQueueSize,
+		quotaObservationQueueSize,
 	)
 	go service.runUsageHeaderSnapshotWorker()
 	return service
