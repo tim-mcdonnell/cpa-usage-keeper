@@ -38,6 +38,7 @@ type Snapshot struct {
 	modelsByName map[string]compiledModel
 	modelConfigs []ModelConfig
 	activeFields ActiveFields
+	contentHash  string
 }
 
 // CompileSnapshot 规范化并校验完整价格集合，只有整个候选集合安全时才返回快照。
@@ -62,6 +63,7 @@ func CompileSnapshot(configs []ModelConfig) (*Snapshot, error) {
 	sort.Slice(snapshot.modelConfigs, func(i, j int) bool {
 		return snapshot.modelConfigs[i].Pricing.Model < snapshot.modelConfigs[j].Pricing.Model
 	})
+	snapshot.contentHash = canonicalSnapshotContentHash(snapshot.modelConfigs)
 	return snapshot, nil
 }
 
@@ -275,4 +277,12 @@ func (s *Snapshot) ActiveFields() ActiveFields {
 		return 0
 	}
 	return s.activeFields
+}
+
+// ContentHash 返回只包含计价语义的规范化快照哈希。
+func (s *Snapshot) ContentHash() string {
+	if s == nil {
+		return sharedEmptySnapshot.contentHash
+	}
+	return s.contentHash
 }
