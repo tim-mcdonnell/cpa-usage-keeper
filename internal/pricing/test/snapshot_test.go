@@ -122,7 +122,7 @@ func TestSnapshotContentHashIsStableAcrossRecompilesAndPersistenceMetadata(t *te
 	}
 }
 
-func TestSnapshotContentHashIgnoresModelAndRuleOrder(t *testing.T) {
+func TestSnapshotContentHashIgnoresRuleOrder(t *testing.T) {
 	t.Parallel()
 
 	modelA := pricing.ModelConfig{
@@ -132,13 +132,73 @@ func TestSnapshotContentHashIgnoresModelAndRuleOrder(t *testing.T) {
 			{Key: "reasoning_effort", Value: "xhigh", Multiplier: 3},
 		},
 	}
-	modelB := pricing.ModelConfig{Pricing: testPricing("model-b", 1)}
 
-	first := mustCompileSnapshot(t, []pricing.ModelConfig{modelB, modelA})
+	first := mustCompileSnapshot(t, []pricing.ModelConfig{modelA})
 	modelA.Rules[0], modelA.Rules[1] = modelA.Rules[1], modelA.Rules[0]
-	second := mustCompileSnapshot(t, []pricing.ModelConfig{modelA, modelB})
+	second := mustCompileSnapshot(t, []pricing.ModelConfig{modelA})
 	if first.ContentHash() != second.ContentHash() {
-		t.Fatalf("semantically identical reordered snapshots have different hashes: %q != %q", first.ContentHash(), second.ContentHash())
+		t.Fatalf("semantically identical rule orderings have different hashes: %q != %q", first.ContentHash(), second.ContentHash())
+	}
+}
+
+func TestSnapshotContentHashIgnoresMultiplierOneRules(t *testing.T) {
+	t.Parallel()
+
+	base := pricing.ModelConfig{Pricing: testPricing("model-a", 1)}
+	withNoOpRule := cloneTestModelConfig(base)
+	withNoOpRule.Rules = []pricing.RuleConfig{{
+		Key:        "service_tier",
+		Value:      "priority",
+		Multiplier: 1,
+	}}
+	withoutRule := mustCompileSnapshot(t, []pricing.ModelConfig{base})
+	withRule := mustCompileSnapshot(t, []pricing.ModelConfig{withNoOpRule})
+	if withoutRule.ContentHash() != withRule.ContentHash() {
+		t.Fatalf("multiplier-one rule changed content hash: %q != %q", withoutRule.ContentHash(), withRule.ContentHash())
+	}
+}
+
+func TestSnapshotContentHashTreatsNegativeZeroAsPositiveZero(t *testing.T) {
+	t.Parallel()
+
+	negativeZero := math.Copysign(0, -1)
+	positiveMultiplier := 2.0
+	negative := pricing.ModelConfig{
+		Pricing: entities.ModelPriceSetting{
+			Model:                "model-a",
+			PricingStyle:         entities.ModelPricingStyleOpenAI,
+			PromptPricePer1M:     negativeZero,
+			CompletionPricePer1M: negativeZero,
+			CacheReadPricePer1M:  negativeZero,
+			CacheWritePricePer1M: negativeZero,
+			PriceMultiplier:      &positiveMultiplier,
+		},
+		Rules: []pricing.RuleConfig{{Key: "service_tier", Value: "priority", Multiplier: negativeZero}},
+	}
+	positive := cloneTestModelConfig(negative)
+	positive.Pricing.PromptPricePer1M = 0
+	positive.Pricing.CompletionPricePer1M = 0
+	positive.Pricing.CacheReadPricePer1M = 0
+	positive.Pricing.CacheWritePricePer1M = 0
+	positive.Rules[0].Multiplier = 0
+
+	negativeSnapshot := mustCompileSnapshot(t, []pricing.ModelConfig{negative})
+	positiveSnapshot := mustCompileSnapshot(t, []pricing.ModelConfig{positive})
+	if negativeSnapshot.ContentHash() != positiveSnapshot.ContentHash() {
+		t.Fatalf("negative-zero prices or rule multiplier changed content hash: %q != %q", negativeSnapshot.ContentHash(), positiveSnapshot.ContentHash())
+	}
+
+	negativeMultiplier := negativeZero
+	positiveMultiplier = 0
+	negative.Pricing = testPricing("model-a", 1)
+	negative.Pricing.PriceMultiplier = &negativeMultiplier
+	negative.Rules = nil
+	positive = cloneTestModelConfig(negative)
+	positive.Pricing.PriceMultiplier = &positiveMultiplier
+	negativeSnapshot = mustCompileSnapshot(t, []pricing.ModelConfig{negative})
+	positiveSnapshot = mustCompileSnapshot(t, []pricing.ModelConfig{positive})
+	if negativeSnapshot.ContentHash() != positiveSnapshot.ContentHash() {
+		t.Fatalf("negative-zero model multiplier changed content hash: %q != %q", negativeSnapshot.ContentHash(), positiveSnapshot.ContentHash())
 	}
 }
 
