@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,56 +17,84 @@ const (
 	quotaWindowSevenDaySeconds     int64 = 7 * 24 * 60 * 60
 	quotaWindowThirtyDaySeconds    int64 = 30 * 24 * 60 * 60
 	quotaWindowAverageMonthSeconds int64 = 365 * 24 * 60 * 60 / 12
+
+	QuotaPercentSourceReported          = "reported"
+	QuotaPercentSourceRemainingFraction = "from_remaining_fraction"
+	QuotaPercentSourceUsedLimit         = "from_used_limit"
 )
 
 func NormalizeQuotaRows(output ProviderOutput) []QuotaRow {
 	// 不在 provider 层强行统一原始结构，只在出口处转换为前端展示需要的 quota rows。
+	var rows []QuotaRow
 	switch result := output.Result.(type) {
 	case AntigravityResult:
-		return normalizeAntigravityQuotaRows(result)
+		rows = normalizeAntigravityQuotaRows(result)
 	case *AntigravityResult:
 		if result == nil {
 			return nil
 		}
-		return normalizeAntigravityQuotaRows(*result)
+		rows = normalizeAntigravityQuotaRows(*result)
 	case CodexResult:
-		return normalizeCodexQuotaRows(result)
+		rows = normalizeCodexQuotaRows(result)
 	case *CodexResult:
 		if result == nil {
 			return nil
 		}
-		return normalizeCodexQuotaRows(*result)
+		rows = normalizeCodexQuotaRows(*result)
 	case GeminiCLIResult:
-		return normalizeGeminiCLIQuotaRows(result)
+		rows = normalizeGeminiCLIQuotaRows(result)
 	case *GeminiCLIResult:
 		if result == nil {
 			return nil
 		}
-		return normalizeGeminiCLIQuotaRows(*result)
+		rows = normalizeGeminiCLIQuotaRows(*result)
 	case ClaudeResult:
-		return normalizeClaudeQuotaRows(result)
+		rows = normalizeClaudeQuotaRows(result)
 	case *ClaudeResult:
 		if result == nil {
 			return nil
 		}
-		return normalizeClaudeQuotaRows(*result)
+		rows = normalizeClaudeQuotaRows(*result)
 	case KimiResult:
-		return normalizeKimiQuotaRows(result)
+		rows = normalizeKimiQuotaRows(result)
 	case *KimiResult:
 		if result == nil {
 			return nil
 		}
-		return normalizeKimiQuotaRows(*result)
+		rows = normalizeKimiQuotaRows(*result)
 	case XAIResult:
-		return normalizeXAIQuotaRows(result)
+		rows = normalizeXAIQuotaRows(result)
 	case *XAIResult:
 		if result == nil {
 			return nil
 		}
-		return normalizeXAIQuotaRows(*result)
+		rows = normalizeXAIQuotaRows(*result)
 	default:
 		return nil
 	}
+	return attachQuotaObservationProvenance(rows)
+}
+
+func attachQuotaObservationProvenance(rows []QuotaRow) []QuotaRow {
+	for index := range rows {
+		row := &rows[index]
+		if row.ResetRaw == "" {
+			row.ResetRaw = row.ResetAt
+		}
+		switch {
+		case row.UsedPercent != nil && row.PercentSource == "":
+			row.PercentSource = QuotaPercentSourceReported
+		case row.UsedPercent == nil && row.RemainingFraction != nil:
+			usedPercent := (1 - *row.RemainingFraction) * 100
+			row.UsedPercent = &usedPercent
+			row.PercentSource = QuotaPercentSourceRemainingFraction
+		case row.UsedPercent == nil && row.Used != nil && row.Limit != nil && *row.Limit > 0:
+			usedPercent := *row.Used / *row.Limit * 100
+			row.UsedPercent = &usedPercent
+			row.PercentSource = QuotaPercentSourceUsedLimit
+		}
+	}
+	return rows
 }
 
 func normalizeClaudeQuotaRows(result ClaudeResult) []QuotaRow {
@@ -99,11 +128,13 @@ func appendClaudeWindowQuotaRow(rows []QuotaRow, key string, label string, scope
 		return rows
 	}
 	row := QuotaRow{
-		Key:         key,
-		Label:       label,
-		Scope:       scope,
-		UsedPercent: floatPtr(window.Utilization),
-		ResetAt:     window.ResetsAt,
+		Key:           key,
+		Label:         label,
+		Scope:         scope,
+		UsedPercent:   floatPtr(window.Utilization),
+		ResetAt:       window.ResetsAt,
+		ResetRaw:      window.ResetsAt,
+		PercentSource: QuotaPercentSourceReported,
 	}
 	// Claude 只给官方语义明确的 5h 会话窗口和 seven_day 系列补 seconds，其它未知 key 不猜测。
 	if key == "five_hour" {
@@ -231,6 +262,8 @@ func appendCodexWindowQuotaRow(rows []QuotaRow, key string, label string, scope 
 		LimitReached:      info.LimitReached,
 		WindowUsageTokens: window.WindowUsageTokens,
 		WindowUsageCost:   window.WindowUsageCost,
+		PercentSource:     QuotaPercentSourceReported,
+		WindowRole:        strings.ToLower(codexWindowRole(key)),
 	}
 	if window.LimitWindowSeconds != 0 {
 		row.Window = &QuotaWindow{Seconds: intPtr(window.LimitWindowSeconds)}
@@ -240,6 +273,7 @@ func appendCodexWindowQuotaRow(rows []QuotaRow, key string, label string, scope 
 	}
 	if window.ResetAt != 0 {
 		row.ResetAt = timeutil.FormatStorageTime(time.Unix(window.ResetAt, 0))
+		row.ResetRaw = strconv.FormatInt(window.ResetAt, 10)
 	}
 	return append(rows, row)
 }
@@ -392,6 +426,7 @@ func normalizeKimiQuotaRows(result KimiResult) []QuotaRow {
 		}
 		if limit.Limit > 0 {
 			row.UsedPercent = floatPtr(limit.Used / limit.Limit * 100)
+			row.PercentSource = QuotaPercentSourceUsedLimit
 		}
 		if limit.ResetIn != 0 {
 			row.ResetAfterSeconds = intPtr(int64(limit.ResetIn))
@@ -479,6 +514,7 @@ func xaiMonthlyQuotaRows(config *XAIBillingConfig) []QuotaRow {
 				row.Remaining = floatPtr(math.Max(0, monthlyLimit-includedUsed))
 				if monthlyLimit > 0 {
 					row.UsedPercent = floatPtr(includedUsed / monthlyLimit * 100)
+					row.PercentSource = QuotaPercentSourceUsedLimit
 					onDemandAvailable := hasOnDemandCap && onDemandCap > 0 && hasOnDemandUsed && onDemandUsed < onDemandCap
 					limitReached := includedUsed >= monthlyLimit && !onDemandAvailable
 					row.LimitReached = boolPtr(limitReached)
@@ -503,6 +539,7 @@ func xaiMonthlyQuotaRows(config *XAIBillingConfig) []QuotaRow {
 			row.Used = floatPtr(onDemandUsed)
 			row.Remaining = floatPtr(math.Max(0, onDemandCap-onDemandUsed))
 			row.UsedPercent = floatPtr(onDemandUsed / onDemandCap * 100)
+			row.PercentSource = QuotaPercentSourceUsedLimit
 			limitReached := onDemandUsed >= onDemandCap
 			row.LimitReached = boolPtr(limitReached)
 			row.Allowed = boolPtr(!limitReached)
@@ -592,6 +629,7 @@ func kimiDetailQuotaRow(key string, scope string, fallbackLabel string, detail *
 	}
 	if detail.Limit > 0 {
 		row.UsedPercent = floatPtr(detail.Used / detail.Limit * 100)
+		row.PercentSource = QuotaPercentSourceUsedLimit
 	}
 	if detail.ResetIn != 0 {
 		row.ResetAfterSeconds = intPtr(int64(detail.ResetIn))

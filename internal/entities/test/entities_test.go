@@ -29,6 +29,7 @@ func TestAllIncludesCoreModels(t *testing.T) {
 		&UsageActivityAggregationCheckpoint{},
 		&AuthSession{},
 		&AppSetting{},
+		&QuotaObservation{},
 	}
 	if len(items) != len(expected) {
 		t.Fatalf("expected %d registered models, got %d", len(expected), len(items))

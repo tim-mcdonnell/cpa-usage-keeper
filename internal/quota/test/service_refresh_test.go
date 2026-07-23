@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -1466,6 +1469,247 @@ func TestXAIRefreshCachesFailureOnlyWhenBothBillingSourcesFail(t *testing.T) {
 	}
 	if len(cache.Items) != 1 || cache.Items[0].Status != RefreshTaskStatusFailed || cache.Items[0].HTTPStatusCode == nil || *cache.Items[0].HTTPStatusCode != 401 {
 		t.Fatalf("expected both-failed xai result in the existing failed cache, got %+v", cache.Items)
+	}
+}
+
+func TestManualRefreshPersistsRetrievablePollQuotaObservation(t *testing.T) {
+	db := openQuotaTestDatabase(t)
+	seedUsageIdentity(t, db, entities.UsageIdentity{
+		Identity:     "claude-auth",
+		Provider:     "claude",
+		Type:         "claude",
+		AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+		AuthTypeName: "oauth",
+	})
+	resetAt := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Second)
+	handler := &refreshHandlerStub{output: ProviderOutput{
+		Provider: "claude",
+		Result: ClaudeResult{Usage: &ClaudeUsagePayload{
+			FiveHour: &ClaudeUsageWindow{Utilization: 12.5, ResetsAt: resetAt.Format(time.RFC3339)},
+		}},
+	}}
+	service := newQuotaServiceWithRegistry(t, db, NewProviderRegistry(map[string]ProviderHandler{"claude": handler}))
+	setRefreshCooldown(service, func(time.Duration) {})
+
+	response, err := service.Refresh(context.Background(), RefreshRequest{
+		AuthIndexes: []string{"claude-auth"},
+		Source:      RefreshSourceManual,
+	})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+	task := waitForRefreshTask(t, service, response.Tasks[0].AuthIndex, RefreshTaskStatusCompleted)
+	if task.RefreshedAt == nil {
+		t.Fatal("expected completed refresh timestamp")
+	}
+
+	start := task.RefreshedAt.Add(-time.Minute)
+	end := task.RefreshedAt.Add(time.Minute)
+	var series ObservationSeriesResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		series, err = service.ListObservations(context.Background(), ObservationSeriesRequest{
+			AuthIndex:    "claude-auth",
+			WindowKindID: "claude/overall/five_hour/18000",
+			Start:        start,
+			End:          end,
+		})
+		if err == nil && len(series.Items) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil || len(series.Items) != 1 {
+		t.Fatalf("expected one retrievable observation, series=%+v err=%v", series, err)
+	}
+	observation := series.Items[0]
+	if observation.Source != string(RefreshSourceManual) ||
+		observation.UsedPercent == nil ||
+		*observation.UsedPercent != 12.5 ||
+		observation.ResetRaw == nil ||
+		*observation.ResetRaw != resetAt.Format(time.RFC3339) {
+		t.Fatalf("unexpected manual observation: %+v", observation)
+	}
+	if observation.AttributedTokens == nil || *observation.AttributedTokens != 0 ||
+		observation.AttributedCostUSD == nil || *observation.AttributedCostUSD != 0 ||
+		!observation.AttributedCostComplete {
+		t.Fatalf("expected computed zero attribution, got %+v", observation)
+	}
+}
+
+func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTraffic(t *testing.T) {
+	db := openQuotaTestDB(t)
+	authIndexes := []string{"codex-load-1", "codex-load-2", "codex-load-3", "codex-load-4"}
+	for _, authIndex := range authIndexes {
+		seedUsageIdentity(t, db, entities.UsageIdentity{
+			Identity:     authIndex,
+			Provider:     "codex",
+			Type:         "codex",
+			AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+			AuthTypeName: "oauth",
+		})
+	}
+	resetAt := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Second)
+	handler := &refreshHandlerStub{output: ProviderOutput{
+		Provider: "codex",
+		Result: CodexResult{Usage: &CodexUsagePayload{
+			RateLimit: &CodexRateLimitInfo{PrimaryWindow: &CodexUsageWindow{
+				UsedPercent:        12.5,
+				LimitWindowSeconds: 18000,
+				ResetAt:            resetAt.Unix(),
+			}},
+		}},
+	}}
+	service := newQuotaServiceWithRegistryAndOptions(
+		t,
+		db,
+		NewProviderRegistry(map[string]ProviderHandler{"codex": handler}),
+		ServiceOptions{
+			RefreshWorkerLimit:               len(authIndexes),
+			UsageHeaderSnapshotFlushInterval: 5 * time.Millisecond,
+		},
+	)
+	setRefreshCooldown(service, func(time.Duration) {})
+
+	start := make(chan struct{})
+	errCh := make(chan error, 3)
+	var refreshResponse RefreshResponse
+	var workers sync.WaitGroup
+	workers.Add(3)
+	go func() {
+		defer workers.Done()
+		<-start
+		for index := 0; index < 80; index++ {
+			authIndex := authIndexes[index%len(authIndexes)]
+			event := entities.UsageEvent{
+				EventKey:    fmt.Sprintf("load-event-%d", index),
+				AuthType:    "oauth",
+				AuthIndex:   authIndex,
+				Model:       "unpriced-load-model",
+				Timestamp:   time.Now(),
+				InputTokens: int64(index + 1),
+				TotalTokens: int64(index + 1),
+			}
+			if err := db.Create(&event).Error; err != nil {
+				errCh <- fmt.Errorf("ingest usage event %d: %w", index, err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for index := 0; index < 80; index++ {
+			authIndex := authIndexes[index%len(authIndexes)]
+			accepted := service.TryAppendUsageHeaderSnapshots([]UsageHeaderSnapshot{{
+				AuthType:   "oauth",
+				AuthIndex:  authIndex,
+				Provider:   "codex",
+				ObservedAt: time.Now(),
+				Headers: http.Header{
+					"X-Codex-Primary-Used-Percent":   []string{strconv.Itoa(10 + index%20)},
+					"X-Codex-Primary-Window-Minutes": []string{"300"},
+					"X-Codex-Primary-Reset-At":       []string{strconv.FormatInt(resetAt.Unix(), 10)},
+				},
+			}})
+			if !accepted {
+				errCh <- fmt.Errorf("header snapshot %d was not accepted", index)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		var err error
+		refreshResponse, err = service.Refresh(context.Background(), RefreshRequest{
+			AuthIndexes: authIndexes,
+			Source:      RefreshSourceManual,
+		})
+		if err != nil {
+			errCh <- fmt.Errorf("refresh under load: %w", err)
+		}
+	}()
+	close(start)
+	workers.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	if len(refreshResponse.Tasks) != len(authIndexes) {
+		t.Fatalf("refresh task count = %d, want %d", len(refreshResponse.Tasks), len(authIndexes))
+	}
+	for _, authIndex := range authIndexes {
+		waitForRefreshTask(t, service, authIndex, RefreshTaskStatusCompleted)
+	}
+	service.StopRefreshTasks()
+
+	var usageEventCount int64
+	if err := db.Model(&entities.UsageEvent{}).Count(&usageEventCount).Error; err != nil {
+		t.Fatalf("count usage events: %v", err)
+	}
+	if usageEventCount != 80 {
+		t.Fatalf("usage event count = %d, want 80", usageEventCount)
+	}
+	var observationCount int64
+	if err := db.Model(&entities.QuotaObservation{}).Count(&observationCount).Error; err != nil {
+		t.Fatalf("count quota observations: %v", err)
+	}
+	if observationCount != int64(len(authIndexes)) {
+		t.Fatalf("poll observation count = %d, want %d", observationCount, len(authIndexes))
+	}
+}
+
+func TestQuotaObservationInsertFailureDoesNotBlockRefreshCacheCompletion(t *testing.T) {
+	db := openQuotaTestDatabase(t)
+	seedUsageIdentity(t, db, entities.UsageIdentity{
+		Identity:     "claude-auth",
+		Provider:     "claude",
+		Type:         "claude",
+		AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+		AuthTypeName: "oauth",
+	})
+	callbackName := "test:fail_quota_observation_insert"
+	insertAttempted := make(chan struct{}, 1)
+	if err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Name == "QuotaObservation" {
+			select {
+			case insertAttempted <- struct{}{}:
+			default:
+			}
+			tx.AddError(errors.New("forced quota observation insert failure"))
+		}
+	}); err != nil {
+		t.Fatalf("register quota observation failure callback: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(callbackName) })
+
+	resetAt := time.Now().Add(5 * time.Hour).UTC().Format(time.RFC3339)
+	handler := &refreshHandlerStub{output: ProviderOutput{
+		Provider: "claude",
+		Result: ClaudeResult{Usage: &ClaudeUsagePayload{
+			FiveHour: &ClaudeUsageWindow{Utilization: 12.5, ResetsAt: resetAt},
+		}},
+	}}
+	service := newQuotaServiceWithRegistry(t, db, NewProviderRegistry(map[string]ProviderHandler{"claude": handler}))
+	setRefreshCooldown(service, func(time.Duration) {})
+
+	response, err := service.Refresh(context.Background(), RefreshRequest{
+		AuthIndexes: []string{"claude-auth"},
+		Source:      RefreshSourceManual,
+	})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+	waitForRefreshTask(t, service, response.Tasks[0].AuthIndex, RefreshTaskStatusCompleted)
+	cache, err := service.GetCachedQuota(context.Background(), CacheRequest{AuthIndexes: []string{"claude-auth"}})
+	if err != nil || len(cache.Items) != 1 || cache.Items[0].Status != RefreshTaskStatusCompleted {
+		t.Fatalf("expected successful quota cache despite observation failure, cache=%+v err=%v", cache, err)
+	}
+	select {
+	case <-insertAttempted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for asynchronous observation insert attempt")
 	}
 }
 

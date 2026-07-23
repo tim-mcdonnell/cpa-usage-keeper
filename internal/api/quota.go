@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"cpa-usage-keeper/internal/quota"
+	"cpa-usage-keeper/internal/timeutil"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 )
@@ -18,6 +19,39 @@ const quotaResetErrorFailed = "quota_reset_failed"
 const quotaResetCreditsErrorFailed = "quota_reset_credits_failed"
 
 func registerQuotaRoutes(router gin.IRoutes, provider QuotaProvider) {
+	router.GET("/quota/observations", func(c *gin.Context) {
+		if provider == nil {
+			writeInternalError(c, "quota provider is not configured", nil)
+			return
+		}
+		authIndex := strings.TrimSpace(c.Query("auth_index"))
+		windowKindID := strings.TrimSpace(c.Query("window_kind_id"))
+		start, startErr := timeutil.ParseStorageTime(c.Query("start"))
+		end, endErr := timeutil.ParseStorageTime(c.Query("end"))
+		if authIndex == "" || windowKindID == "" || startErr != nil || endErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index, window_kind_id, start, and end are required"})
+			return
+		}
+		response, err := provider.ListObservations(c.Request.Context(), quota.ObservationSeriesRequest{
+			AuthIndex:    authIndex,
+			WindowKindID: windowKindID,
+			Start:        start,
+			End:          end,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, quota.ErrValidation):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "quota observation range is invalid"})
+			case errors.Is(err, quota.ErrNotFound):
+				c.JSON(http.StatusNotFound, gin.H{"error": "quota credential not found"})
+			default:
+				writeInternalError(c, "quota observations lookup failed", err)
+			}
+			return
+		}
+		c.JSON(http.StatusOK, response)
+	})
+
 	router.GET("/quota/auto-refresh/settings", func(c *gin.Context) {
 		if provider == nil {
 			writeInternalError(c, "quota provider is not configured", nil)

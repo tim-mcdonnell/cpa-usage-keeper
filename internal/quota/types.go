@@ -65,6 +65,10 @@ type QuotaRow struct {
 	ResetAfterSeconds *int64       `json:"resetAfterSeconds,omitempty"`
 	WindowUsageTokens *int64       `json:"window_usage_tokens,omitempty"`
 	WindowUsageCost   *float64     `json:"window_usage_cost,omitempty"`
+	// Observation-only provenance stays out of the existing quota cache API.
+	PercentSource string `json:"-"`
+	ResetRaw      string `json:"-"`
+	WindowRole    string `json:"-"`
 }
 
 type AntigravityQuotaBucket struct {

@@ -65,6 +65,8 @@ const (
 	migrationUsageOverviewFiveDimensions = "20260723_usage_overview_five_dimensions"
 	// migrationModelPriceRules 创建每模型精确字段倍率规则表。
 	migrationModelPriceRules = "20260723_model_price_rules"
+	// migrationQuotaObservations 创建 append-only quota observation 事件表。
+	migrationQuotaObservations = "20260723_quota_observations"
 )
 
 type schemaMigration struct {
@@ -173,6 +175,7 @@ func orderedMigrations() []databaseMigration {
 		// 五维重建自己管理 schema/setup 与 1000-event 小事务，外层不能再包长事务。
 		{version: migrationUsageOverviewFiveDimensions, run: usageOverviewFiveDimensionsMigration, disableTransaction: true},
 		{version: migrationModelPriceRules, run: createModelPriceRulesMigration},
+		{version: migrationQuotaObservations, run: createQuotaObservationsMigration},
 	}
 }
 
