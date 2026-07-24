@@ -72,39 +72,55 @@ export function PriceRulesModal({
   }, [requestErrorDetail, requestErrorKey])
 
   useEffect(() => {
-    setErrors((current) => reconcilePricingRuleDuplicateErrors(drafts, current))
+    let cancelled = false
+    queueMicrotask(() => {
+      if (!cancelled) setErrors((current) => reconcilePricingRuleDuplicateErrors(drafts, current))
+    })
+    return () => {
+      cancelled = true
+    }
   }, [drafts])
 
   useEffect(() => {
     const identity = ++requestIdentityRef.current
-    if (!open || !model) {
-      setLoading(false)
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      if (!open || !model) {
+        setLoading(false)
+        setLoadFailed(false)
+        setSaving(false)
+        return
+      }
+
+      // 切换模型时先清空旧草稿，迟到响应只能由相同请求身份写回。
+      setDrafts([createPricingRuleDraft()])
+      setErrors({})
+      setRequestErrorKey('')
+      setRequestErrorDetail('')
       setLoadFailed(false)
       setSaving(false)
-      return
+      setLoading(true)
+      void loadRules(model)
+        .then((rules) => {
+          if (requestIdentityRef.current !== identity || rules === null) return
+          setDrafts(pricingRulesToDrafts(rules))
+        })
+        .catch(() => {
+          if (requestIdentityRef.current !== identity) return
+          setLoadFailed(true)
+          setRequestErrorKey('usage_stats.model_price_rules_load_failed')
+        })
+        .finally(() => {
+          if (requestIdentityRef.current === identity) setLoading(false)
+        })
+    })
+    return () => {
+      cancelled = true
+      if (requestIdentityRef.current === identity) {
+        requestIdentityRef.current += 1
+      }
     }
-
-    // 切换模型时立即清空旧草稿，迟到响应只能由相同请求身份写回。
-    setDrafts([createPricingRuleDraft()])
-    setErrors({})
-    setRequestErrorKey('')
-    setRequestErrorDetail('')
-    setLoadFailed(false)
-    setSaving(false)
-    setLoading(true)
-    void loadRules(model)
-      .then((rules) => {
-        if (requestIdentityRef.current !== identity || rules === null) return
-        setDrafts(pricingRulesToDrafts(rules))
-      })
-      .catch(() => {
-        if (requestIdentityRef.current !== identity) return
-        setLoadFailed(true)
-        setRequestErrorKey('usage_stats.model_price_rules_load_failed')
-      })
-      .finally(() => {
-        if (requestIdentityRef.current === identity) setLoading(false)
-      })
   }, [loadRules, model, open])
 
   const updateDraft = (id: string, patch: Partial<PricingRuleDraft>) => {

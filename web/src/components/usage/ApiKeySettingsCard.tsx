@@ -139,7 +139,8 @@ export function ApiKeySettingsCard({ apiKeys, loading = false, savingId = null, 
   const [draftAliases, setDraftAliases] = useState<Record<string, string>>(initialAliases);
 
   useEffect(() => {
-    setDraftAliases(initialAliases);
+    const timeoutID = window.setTimeout(() => setDraftAliases(initialAliases), 0);
+    return () => window.clearTimeout(timeoutID);
   }, [initialAliases]);
 
   useEffect(() => () => {

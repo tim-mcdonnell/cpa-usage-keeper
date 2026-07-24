@@ -990,42 +990,48 @@ export function QuotaInspectionModal({
   const scheduleMax = AUTO_REFRESH_SCHEDULE_LIMITS[scheduleUnit]
 
   useEffect(() => {
-    if (!settingsModalOpen) {
-      setSettingsError('')
-      setSettingsLoaded(false)
-      return
-    }
     const controller = new AbortController()
-    setSettingsLoading(true)
-    setSettingsLoaded(false)
-    setSettingsError('')
-    void fetchQuotaAutoRefreshSettings(controller.signal)
-      .then((settings) => {
-        if (controller.signal.aborted) return
-        applyQuotaAutoRefreshSettingsForm(settings, {
-          setEnabled: setSettingsEnabled,
-          setUnit: setScheduleUnit,
-          setValue: setScheduleValue,
+    const timeoutID = window.setTimeout(() => {
+      if (!settingsModalOpen) {
+        setSettingsLoading(false)
+        setSettingsError('')
+        setSettingsLoaded(false)
+        return
+      }
+      setSettingsLoading(true)
+      setSettingsLoaded(false)
+      setSettingsError('')
+      void fetchQuotaAutoRefreshSettings(controller.signal)
+        .then((settings) => {
+          if (controller.signal.aborted) return
+          applyQuotaAutoRefreshSettingsForm(settings, {
+            setEnabled: setSettingsEnabled,
+            setUnit: setScheduleUnit,
+            setValue: setScheduleValue,
+          })
+          setSettingsLoaded(true)
         })
-        setSettingsLoaded(true)
-      })
-      .catch((nextError: unknown) => {
-        if (controller.signal.aborted) return
-        const fallback = resolveQuotaAutoRefreshSettingsLoadFailure(nextError, t('usage_stats.credentials_auto_refresh_load_failed'))
-        applyQuotaAutoRefreshSettingsForm(fallback.settings, {
-          setEnabled: setSettingsEnabled,
-          setUnit: setScheduleUnit,
-          setValue: setScheduleValue,
+        .catch((nextError: unknown) => {
+          if (controller.signal.aborted) return
+          const fallback = resolveQuotaAutoRefreshSettingsLoadFailure(nextError, t('usage_stats.credentials_auto_refresh_load_failed'))
+          applyQuotaAutoRefreshSettingsForm(fallback.settings, {
+            setEnabled: setSettingsEnabled,
+            setUnit: setScheduleUnit,
+            setValue: setScheduleValue,
+          })
+          setSettingsLoaded(fallback.loaded)
+          setSettingsError(fallback.error)
         })
-        setSettingsLoaded(fallback.loaded)
-        setSettingsError(fallback.error)
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setSettingsLoading(false)
-        }
-      })
-    return () => controller.abort()
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setSettingsLoading(false)
+          }
+        })
+    }, 0)
+    return () => {
+      window.clearTimeout(timeoutID)
+      controller.abort()
+    }
   }, [settingsModalOpen, t])
 
   const handleSaveAutoRefreshSettings = async () => {

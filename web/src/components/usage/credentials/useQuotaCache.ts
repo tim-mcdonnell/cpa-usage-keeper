@@ -105,9 +105,12 @@ export function useQuotaCache({ enabled, authIndexes, onAuthRequired }: UseQuota
       requestControllerRef.current = null
       return
     }
-    void refreshQuotaCache()
+    const initialRefreshID = window.setTimeout(() => {
+      void refreshQuotaCache()
+    }, 0)
     const intervalID = window.setInterval(refreshQuotaCache, QUOTA_CACHE_REFRESH_INTERVAL_MS)
     return () => {
+      window.clearTimeout(initialRefreshID)
       window.clearInterval(intervalID)
       requestControllerRef.current?.abort()
       requestControllerRef.current = null
