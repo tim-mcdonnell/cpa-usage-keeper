@@ -101,7 +101,9 @@ func TestCapacityDetailReturnsFullEstimateAndExactObservationSeries(t *testing.T
 	if err != nil {
 		t.Fatalf("GetCapacityDetail returned error: %v", err)
 	}
-	if response.Estimate.EpochResetAt != estimates[0].EpochResetAt ||
+	if response.Estimate.EpochResetAt == nil ||
+		estimates[0].EpochResetAt == nil ||
+		!response.Estimate.EpochResetAt.Equal(*estimates[0].EpochResetAt) ||
 		len(response.Estimate.Points) != 1 ||
 		len(response.Estimate.FittedSeries) != 1 {
 		t.Fatalf("detail estimate lost coherent diagnostics: %+v", response.Estimate)
@@ -115,6 +117,52 @@ func TestCapacityDetailReturnsFullEstimateAndExactObservationSeries(t *testing.T
 		fitted.ObservationID != response.Observations[0].ID ||
 		point.CumulativePercentOffset != fitted.CumulativePercentOffset {
 		t.Fatalf("detail classifications and fitted series disagree: point=%+v fitted=%+v", point, fitted)
+	}
+}
+
+func TestCapacityStoredHistoryWithoutResetIsInsufficientNotEmpty(t *testing.T) {
+	db := openQuotaTestDatabase(t)
+	identity := createCapacityIdentity(t, db, "auth-unassigned")
+	observation := createCapacityObservation(t, db, identity.ID)
+	if err := db.Model(&observation).Update("reset_at", nil).Error; err != nil {
+		t.Fatalf("remove reset metadata: %v", err)
+	}
+	service := quota.NewServiceWithRegistryAndOptions(
+		db,
+		quota.NewProviderRegistry(nil),
+		quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest()},
+	)
+	t.Cleanup(service.StopRefreshTasks)
+
+	response, err := service.GetCapacity(context.Background(), quota.CapacityRequest{
+		AuthIndexes: []string{"auth-unassigned"},
+	})
+	if err != nil {
+		t.Fatalf("GetCapacity returned error: %v", err)
+	}
+	if len(response.Items) != 1 ||
+		len(response.Items[0].Windows) != 1 ||
+		response.Items[0].Windows[0].CurrentEpoch == nil {
+		t.Fatalf("stored unassigned history was reported as empty: %+v", response)
+	}
+	current := response.Items[0].Windows[0].CurrentEpoch
+	if current.Confidence != estimate.ConfidenceInsufficient || current.EpochResetAt != nil {
+		t.Fatalf("unassigned current estimate = %+v", current)
+	}
+
+	detail, err := service.GetCapacityDetail(context.Background(), quota.CapacityDetailRequest{
+		AuthIndex:    "auth-unassigned",
+		WindowKindID: estimate.WindowKindCodexFiveHour,
+	})
+	if err != nil {
+		t.Fatalf("GetCapacityDetail returned error: %v", err)
+	}
+	if detail.Estimate.EpochResetAt != nil ||
+		len(detail.Estimate.Points) != 1 ||
+		detail.Estimate.Points[0].Class != estimate.PointEpochUnassigned ||
+		len(detail.Observations) != 1 ||
+		detail.Observations[0].ID != observation.ID {
+		t.Fatalf("unassigned detail response = %+v", detail)
 	}
 }
 
@@ -230,7 +278,7 @@ func capacityStubEstimates(observationID int64) []estimate.WindowEstimate {
 			Provider:      "codex",
 			WindowKindID:  estimate.WindowKindCodexFiveHour,
 			WindowSeconds: int64(5 * time.Hour / time.Second),
-			EpochResetAt:  resetAt,
+			EpochResetAt:  timePointer(resetAt),
 			Confidence:    estimate.ConfidenceInsufficient,
 			Points: []estimate.PointDiagnostic{{
 				ObservationID: observationID,

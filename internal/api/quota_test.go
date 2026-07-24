@@ -158,7 +158,6 @@ func TestQuotaCacheReturnsCachedCurrentPageQuota(t *testing.T) {
 }
 
 func TestQuotaCapacityForwardsBatchShapeAndReturnsEmptyVersusInsufficient(t *testing.T) {
-	resetAt := time.Date(2026, 7, 23, 15, 0, 0, 0, time.UTC)
 	provider := &quotaProviderStub{capacityResponse: quota.CapacityResponse{
 		Items: []quota.CredentialCapacity{
 			{AuthIndex: "auth-empty", Windows: []quota.CapacityWindow{}},
@@ -169,9 +168,12 @@ func TestQuotaCapacityForwardsBatchShapeAndReturnsEmptyVersusInsufficient(t *tes
 					WindowKindID:  estimate.WindowKindCodexFiveHour,
 					WindowSeconds: 18000,
 					CurrentEpoch: &estimate.WindowEstimate{
-						EpochResetAt: resetAt,
-						Confidence:   estimate.ConfidenceInsufficient,
-						Method:       estimate.MethodOLSBlockBootstrap,
+						Confidence: estimate.ConfidenceInsufficient,
+						Points: []estimate.PointDiagnostic{{
+							ObservationID: 7,
+							Class:         estimate.PointEpochUnassigned,
+						}},
+						Method: estimate.MethodOLSBlockBootstrap,
 					},
 					RecentEpochs: []estimate.WindowEstimate{},
 				}},
@@ -199,6 +201,7 @@ func TestQuotaCapacityForwardsBatchShapeAndReturnsEmptyVersusInsufficient(t *tes
 	body := resp.Body.String()
 	if !contains(body, `"auth_index":"auth-empty","windows":[]`) ||
 		!contains(body, `"confidence":"insufficient"`) ||
+		!contains(body, `"epoch_reset_at":null`) ||
 		!contains(body, `"recent_epochs":[]`) {
 		t.Fatalf("unexpected capacity response: %s", body)
 	}
@@ -210,7 +213,7 @@ func TestQuotaCapacityDetailReturnsClassificationsObservationsAndExactFittedSeri
 		Estimate: estimate.WindowEstimate{
 			Provider:     "codex",
 			WindowKindID: estimate.WindowKindCodexFiveHour,
-			EpochResetAt: resetAt,
+			EpochResetAt: &resetAt,
 			Confidence:   estimate.ConfidenceLow,
 			Points: []estimate.PointDiagnostic{{
 				ObservationID:           7,
@@ -328,6 +331,92 @@ func TestQuotaCapacityRejectsMalformedRequestsAndUsesStandardErrors(t *testing.T
 			}
 		})
 	}
+}
+
+func TestQuotaCapacityEnforcesCredentialAndBodyLimitsBeforeProvider(t *testing.T) {
+	authIndexes := make([]string, quota.CapacityMaxAuthIndexes+1)
+	for index := range authIndexes {
+		authIndexes[index] = "auth-" + strconv.Itoa(index)
+	}
+	bodyBytes, err := json.Marshal(map[string]any{"auth_indexes": authIndexes})
+	if err != nil {
+		t.Fatalf("marshal auth indexes: %v", err)
+	}
+	testCases := []struct {
+		name         string
+		body         string
+		wantStatus   int
+		wantError    string
+		wantProvider bool
+	}{
+		{
+			name:         "exactly 100 credentials",
+			body:         mustMarshalCapacityAuthIndexes(t, authIndexes[:quota.CapacityMaxAuthIndexes]),
+			wantStatus:   http.StatusOK,
+			wantProvider: true,
+		},
+		{
+			name:       "101 credentials",
+			body:       string(bodyBytes),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "at most 100 auth_indexes per request",
+		},
+		{
+			name: "exactly 64 KiB",
+			body: func() string {
+				prefix := `{"auth_indexes":["auth-1"]}`
+				return prefix + strings.Repeat(" ", capacityRequestBodyLimit-len(prefix))
+			}(),
+			wantStatus:   http.StatusOK,
+			wantProvider: true,
+		},
+		{
+			name: "over 64 KiB",
+			body: func() string {
+				prefix := `{"auth_indexes":["auth-1"]}`
+				return prefix + strings.Repeat(" ", capacityRequestBodyLimit-len(prefix)+1)
+			}(),
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantError:  "request body too large",
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			provider := &quotaProviderStub{}
+			router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: provider})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/quota/capacity",
+				strings.NewReader(testCase.body),
+			)
+			req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+
+			router.ServeHTTP(resp, req)
+
+			if resp.Code != testCase.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", resp.Code, resp.Body.String(), testCase.wantStatus)
+			}
+			if testCase.wantError != "" &&
+				resp.Body.String() != `{"error":"`+testCase.wantError+`"}` {
+				t.Fatalf("body = %s, want exact error %q", resp.Body.String(), testCase.wantError)
+			}
+			called := len(provider.capacityRequest.AuthIndexes) > 0
+			if called != testCase.wantProvider {
+				t.Fatalf("provider called = %v, want %v", called, testCase.wantProvider)
+			}
+		})
+	}
+}
+
+func mustMarshalCapacityAuthIndexes(t *testing.T, authIndexes []string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"auth_indexes": authIndexes})
+	if err != nil {
+		t.Fatalf("marshal capacity auth indexes: %v", err)
+	}
+	return string(body)
 }
 
 func TestQuotaCapacityEndpointsRejectAPIKeyViewer(t *testing.T) {

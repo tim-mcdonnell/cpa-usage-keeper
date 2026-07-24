@@ -19,6 +19,7 @@ const (
 	capacityCompletedEpochLimit = 8
 	capacityEpochReadCount      = capacityCompletedEpochLimit + 1
 	capacityReadBoundaryDays    = 1
+	CapacityMaxAuthIndexes      = 100
 )
 
 var capacityWindowKinds = []string{
@@ -62,8 +63,8 @@ type CapacityDetailResponse struct {
 
 func (s *Service) GetCapacity(ctx context.Context, request CapacityRequest) (CapacityResponse, error) {
 	authIndexes := normalizeCapacityAuthIndexes(request.AuthIndexes)
-	if len(authIndexes) == 0 {
-		return CapacityResponse{}, fmt.Errorf("%w: auth_indexes are required", ErrValidation)
+	if err := validateNormalizedCapacityAuthIndexes(authIndexes); err != nil {
+		return CapacityResponse{}, err
 	}
 	identities, err := repository.ListActiveAuthFileUsageIdentitiesByAuthIndexes(ctx, s.db, authIndexes)
 	if err != nil {
@@ -101,6 +102,20 @@ func (s *Service) GetCapacity(ctx context.Context, request CapacityRequest) (Cap
 		response.Items = append(response.Items, item)
 	}
 	return response, nil
+}
+
+func ValidateCapacityRequest(request CapacityRequest) error {
+	return validateNormalizedCapacityAuthIndexes(normalizeCapacityAuthIndexes(request.AuthIndexes))
+}
+
+func validateNormalizedCapacityAuthIndexes(authIndexes []string) error {
+	if len(authIndexes) == 0 {
+		return fmt.Errorf("%w: auth_indexes are required", ErrValidation)
+	}
+	if len(authIndexes) > CapacityMaxAuthIndexes {
+		return ErrCapacityAuthIndexLimit
+	}
+	return nil
 }
 
 func (s *Service) GetCapacityDetail(ctx context.Context, request CapacityDetailRequest) (CapacityDetailResponse, error) {
@@ -175,7 +190,7 @@ func capacityWindowFromEstimates(estimates []estimate.WindowEstimate, now time.T
 	}
 	for _, value := range estimates {
 		summary := estimate.WithoutDetail(value)
-		if value.EpochResetAt.After(now) {
+		if value.EpochResetAt == nil || value.EpochResetAt.After(now) {
 			if window.CurrentEpoch == nil {
 				window.CurrentEpoch = &summary
 			}
@@ -196,14 +211,14 @@ func selectCapacityEstimate(
 	if epochResetAt != nil {
 		selector := timeutil.NormalizeStorageTime(*epochResetAt)
 		for _, value := range estimates {
-			if value.EpochResetAt.Equal(selector) {
+			if value.EpochResetAt != nil && value.EpochResetAt.Equal(selector) {
 				return value, true
 			}
 		}
 		return estimate.WindowEstimate{}, false
 	}
 	for _, value := range estimates {
-		if value.EpochResetAt.After(now) {
+		if value.EpochResetAt == nil || value.EpochResetAt.After(now) {
 			return value, true
 		}
 	}

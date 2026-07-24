@@ -90,6 +90,7 @@ const (
 	PointStaleQuarantined    PointClass = "stale_quarantined"
 	PointPricingExcluded     PointClass = "pricing_excluded"
 	PointPreBreak            PointClass = "pre_break"
+	PointEpochUnassigned     PointClass = "epoch_unassigned"
 )
 
 type Interval struct {
@@ -126,7 +127,7 @@ type WindowEstimate struct {
 	Provider             string            `json:"provider"`
 	WindowKindID         string            `json:"window_kind_id"`
 	WindowSeconds        int64             `json:"window_seconds"`
-	EpochResetAt         time.Time         `json:"epoch_reset_at"`
+	EpochResetAt         *time.Time        `json:"epoch_reset_at"`
 	SampleCount          int               `json:"sample_count"`
 	EffectiveSamples     int               `json:"effective_samples"`
 	DistinctPercents     int               `json:"distinct_percents"`

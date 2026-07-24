@@ -23,10 +23,13 @@ func (e *estimator) estimateEpoch(epoch *epochSeries, now time.Time) WindowEstim
 		Provider:        epoch.key.provider,
 		WindowKindID:    epoch.key.windowKindID,
 		WindowSeconds:   epoch.key.windowSeconds,
-		EpochResetAt:    epoch.resetAt,
 		SampleCount:     len(epoch.observations),
 		Confidence:      ConfidenceInsufficient,
 		Method:          MethodOLSBlockBootstrap,
+	}
+	if !epoch.resetAt.IsZero() {
+		resetAt := epoch.resetAt
+		value.EpochResetAt = &resetAt
 	}
 	flags := make(map[Flag]struct{})
 	if epoch.identityChanged {
@@ -200,8 +203,17 @@ func (e *estimator) applyCostClassifications(epoch *epochSeries, selected map[in
 		if observation.AttributedTokens == nil {
 			continue
 		}
+		if observation.AttributedCostUSD == nil ||
+			!observation.AttributedCostComplete ||
+			strings.TrimSpace(observation.PricingSnapshotHash) == "" {
+			record.class = PointPricingExcluded
+			continue
+		}
+		if selected == nil {
+			continue
+		}
 		_, selectedForCost := selected[observation.ID]
-		if selected == nil || !selectedForCost {
+		if !selectedForCost {
 			record.class = PointPricingExcluded
 		}
 	}
@@ -282,18 +294,21 @@ func qualifyingCostSegments(records []*classifiedObservation) []costSegment {
 	}
 	for _, record := range records {
 		observation := record.observation
-		valid := record.class == PointIncluded &&
-			record.adjustedPercent != nil &&
-			observation.AttributedCostUSD != nil &&
+		priced := observation.AttributedCostUSD != nil &&
 			observation.AttributedCostComplete &&
 			strings.TrimSpace(observation.PricingSnapshotHash) != ""
-		if !valid {
+		if !priced {
 			flush()
 			continue
 		}
 		hash := strings.TrimSpace(observation.PricingSnapshotHash)
-		if current == nil || current.hash != hash {
+		if current != nil && current.hash != hash {
 			flush()
+		}
+		if record.class != PointIncluded || record.adjustedPercent == nil {
+			continue
+		}
+		if current == nil {
 			current = &costSegment{
 				hash:           hash,
 				start:          observation.ObservedAt,

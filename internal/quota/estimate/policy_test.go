@@ -286,6 +286,36 @@ func TestResetAmbiguityUsesDerivedMaxDeviationFromAbsoluteAnchor(t *testing.T) {
 
 func TestPricingSegmentsAndUnpricedModelsAffectCostOnly(t *testing.T) {
 	t.Parallel()
+	t.Run("coverage gap reconnects one pricing-pure segment", func(t *testing.T) {
+		observations := linearSeries(8, 100, 10, 2.5)
+		observations[4].AttributedTokens = int64Pointer(300)
+		setComposition(&observations[4], 300, 180, 60, 60, 0)
+		observations[4].AttributedCostUSD = floatPointer(0.3)
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if !slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+			t.Fatalf("flags = %v, want coverage_gap", result.Flags)
+		}
+		if result.CostAt100 == nil || result.CostSegment == nil {
+			t.Fatalf("reconnected pricing-pure series did not qualify for cost: %+v", result)
+		}
+		if result.CostSegment.PricingSnapshotHash != "pricing-a" {
+			t.Fatalf("cost segment hash = %q", result.CostSegment.PricingSnapshotHash)
+		}
+	})
+
+	t.Run("early pure-pricing accrual stays included", func(t *testing.T) {
+		observations := linearSeries(3, 100, 10, 5)
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if result.Confidence != estimate.ConfidenceInsufficient {
+			t.Fatalf("confidence = %q, want insufficient", result.Confidence)
+		}
+		for _, point := range result.Points {
+			if point.Class != estimate.PointIncluded {
+				t.Fatalf("pure-pricing point %d class = %q, want included", point.ObservationID, point.Class)
+			}
+		}
+	})
+
 	t.Run("longest qualifying segment is selected", func(t *testing.T) {
 		observations := linearSeries(12, 100, 5, 5)
 		for index := 6; index < len(observations); index++ {

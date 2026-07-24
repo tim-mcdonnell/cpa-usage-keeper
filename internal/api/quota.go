@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ type quotaRequest struct {
 
 const quotaResetErrorFailed = "quota_reset_failed"
 const quotaResetCreditsErrorFailed = "quota_reset_credits_failed"
+const capacityRequestBodyLimit = 64 * 1024
 
 func registerQuotaRoutes(router gin.IRoutes, provider QuotaProvider) {
 	router.POST("/quota/capacity", func(c *gin.Context) {
@@ -26,16 +28,37 @@ func registerQuotaRoutes(router gin.IRoutes, provider QuotaProvider) {
 			writeInternalError(c, "quota provider is not configured", nil)
 			return
 		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, capacityRequestBodyLimit)
 		var request quotaRequest
-		if err := c.ShouldBindJSON(&request); err != nil || len(request.AuthIndexes) == 0 {
+		bindErr := c.ShouldBindJSON(&request)
+		if bindErr == nil {
+			_, bindErr = io.Copy(io.Discard, c.Request.Body)
+		}
+		var maxBytesError *http.MaxBytesError
+		if errors.As(bindErr, &maxBytesError) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
+		if bindErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "auth_indexes are required"})
 			return
 		}
-		response, err := provider.GetCapacity(c.Request.Context(), quota.CapacityRequest{
+		capacityRequest := quota.CapacityRequest{
 			AuthIndexes: request.AuthIndexes,
-		})
+		}
+		if err := quota.ValidateCapacityRequest(capacityRequest); err != nil {
+			if errors.Is(err, quota.ErrCapacityAuthIndexLimit) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "at most 100 auth_indexes per request"})
+				return
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": "auth_indexes are required"})
+			return
+		}
+		response, err := provider.GetCapacity(c.Request.Context(), capacityRequest)
 		if err != nil {
 			switch {
+			case errors.Is(err, quota.ErrCapacityAuthIndexLimit):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "at most 100 auth_indexes per request"})
 			case errors.Is(err, quota.ErrValidation):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "auth_indexes are required"})
 			default:

@@ -124,8 +124,13 @@ func (e *estimator) EstimateWindows(observations []entities.QuotaObservation, no
 		if result[left].WindowKindID != result[right].WindowKindID {
 			return result[left].WindowKindID < result[right].WindowKindID
 		}
-		if !result[left].EpochResetAt.Equal(result[right].EpochResetAt) {
-			return result[left].EpochResetAt.After(result[right].EpochResetAt)
+		leftReset := result[left].EpochResetAt
+		rightReset := result[right].EpochResetAt
+		if leftReset == nil || rightReset == nil {
+			return leftReset != nil
+		}
+		if !leftReset.Equal(*rightReset) {
+			return leftReset.After(*rightReset)
 		}
 		return result[left].UsageIdentityID < result[right].UsageIdentityID
 	})
@@ -172,8 +177,19 @@ func assignEpochs(key seriesKey, observations []entities.QuotaObservation) []*ep
 		}
 		current.observations = append(current.observations, record)
 	}
+	if len(epochs) == 0 && len(records) > 0 {
+		for _, record := range records {
+			record.class = PointEpochUnassigned
+		}
+		epochs = append(epochs, &epochSeries{
+			key:          key,
+			observations: records,
+		})
+	}
 	for _, epoch := range epochs {
-		applyForcedBreaks(epoch)
+		if !epoch.resetAt.IsZero() {
+			applyForcedBreaks(epoch)
+		}
 	}
 	return epochs
 }

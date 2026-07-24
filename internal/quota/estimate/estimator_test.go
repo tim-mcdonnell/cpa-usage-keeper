@@ -165,8 +165,18 @@ func TestObservationsWithoutCanonicalResetAreExcluded(t *testing.T) {
 		observations[index].ResetAt = nil
 		observations[index].ResetAfterSeconds = nil
 	}
-	if results := defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)); len(results) != 0 {
-		t.Fatalf("observations without canonical reset produced estimates: %+v", results)
+	results := defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour))
+	result := requireSingleEstimate(t, results)
+	if result.Confidence != estimate.ConfidenceInsufficient || result.EpochResetAt != nil {
+		t.Fatalf("observations without canonical reset = %+v, want unassigned insufficient estimate", result)
+	}
+	if len(result.Points) != len(observations) {
+		t.Fatalf("unassigned point count = %d, want %d", len(result.Points), len(observations))
+	}
+	for _, point := range result.Points {
+		if point.Class != estimate.PointEpochUnassigned {
+			t.Fatalf("unassigned point class = %q", point.Class)
+		}
 	}
 }
 
