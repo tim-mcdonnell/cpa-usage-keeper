@@ -96,14 +96,17 @@ func TestDecodeRedisUsageMessageWithHeadersExtractsQuotaSnapshot(t *testing.T) {
 	if snapshot == nil {
 		t.Fatal("expected quota header snapshot")
 	}
-	if snapshot.AuthType != "oauth" || snapshot.AuthIndex != "codex-auth" || snapshot.Provider != "codex" {
+	if snapshot.AuthType != "oauth" ||
+		snapshot.AuthIndex != "codex-auth" ||
+		snapshot.Provider != "codex" ||
+		snapshot.TriggeringEventKey != "req-header" {
 		t.Fatalf("unexpected snapshot identity: %+v", snapshot)
 	}
 	if snapshot.Headers.Get("X-Codex-Plan-Type") != "pro" {
 		t.Fatalf("expected codex plan header, got %#v", snapshot.Headers)
 	}
-	if snapshot.ObservedAt.IsZero() {
-		t.Fatalf("expected observed timestamp")
+	if !snapshot.ObservedAt.Equal(event.Timestamp) {
+		t.Fatalf("snapshot observed_at = %v, want triggering event timestamp %v", snapshot.ObservedAt, event.Timestamp)
 	}
 }
 

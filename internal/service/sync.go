@@ -243,6 +243,7 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 	readyRows := make([]entities.RedisUsageInbox, 0, len(events))
 	readyEvents := make([]entities.UsageEvent, 0, len(events))
 	headerSnapshots := make([]quota.UsageHeaderSnapshot, 0, len(events))
+	headerSnapshotEventIndexes := make([]int, 0, len(events))
 	for index, item := range normalizedItems {
 		// ready=false 的槽位依赖失败的 identity 查询，不能按 default 猜测入库。
 		if !item.ready {
@@ -250,10 +251,12 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 		}
 		// normalizedItems 与原 validRows/events/eventSnapshots 使用同一索引，事务关联不会串行。
 		readyRows = append(readyRows, validRows[index])
+		readyEventIndex := len(readyEvents)
 		readyEvents = append(readyEvents, item.event)
 		if eventSnapshots[index] != nil {
 			// 只收集已准备入库事件的 snapshot，unresolved snapshot 不得提前通知 quota worker。
 			headerSnapshots = append(headerSnapshots, *eventSnapshots[index])
+			headerSnapshotEventIndexes = append(headerSnapshotEventIndexes, readyEventIndex)
 		}
 	}
 	failureCounts := redisInboxFailureCounts{}
@@ -316,6 +319,10 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 	// 事务已经同时提交 usage_events 与对应 inbox processed，只有此时事件级 Token 日志才代表真实入库事件。
 	logCommittedTokenProcessingEvents(normalizedItems)
 	if result.InsertedEvents > 0 {
+		// Create 已经回填事件 ID；snapshot 额外携带该 ID，避免重复 event_key 让归因匹配到其它事件。
+		for index, eventIndex := range headerSnapshotEventIndexes {
+			headerSnapshots[index].TriggeringEventID = events[eventIndex].ID
+		}
 		// usage_events 事务已经提交后才通知最近事件缓存，避免缓存看到未落库的数据。
 		if s.recentUsage != nil && !s.recentUsage.TryAppend(events) {
 			// 缓存队列满只影响 realtime/边界缓存的新鲜度，不能反向阻塞或回滚写入链路。
@@ -390,6 +397,8 @@ func newRedisBatchSyncResult(status string, processedRows int) *servicedto.Redis
 }
 
 func coalesceUsageHeaderSnapshotsByAuthIndex(snapshots []quota.UsageHeaderSnapshot) []quota.UsageHeaderSnapshot {
+	// 这是 sampled-recording 的第一个 coalescing seam。
+	// 同一已提交批次每个 auth_index 只有最终存活快照可继续成为 observation。
 	if len(snapshots) <= 1 {
 		return snapshots
 	}

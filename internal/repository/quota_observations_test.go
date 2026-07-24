@@ -42,7 +42,7 @@ func TestSumQuotaAttributedUsageFiltersCredentialAndHalfOpenWindowAndPreservesBu
 	}
 	resolver := quotaObservationPricingResolver(t, true)
 
-	attribution, err := SumQuotaAttributedUsage(context.Background(), db, "oauth", "auth-1", start, end, events[0].ID, resolver)
+	attribution, err := SumQuotaAttributedUsage(context.Background(), db, "oauth", "auth-1", start, end, events[0].ID, QuotaAttributionTrigger{}, resolver)
 	if err != nil {
 		t.Fatalf("SumQuotaAttributedUsage returned error: %v", err)
 	}
@@ -82,6 +82,7 @@ func TestSumQuotaAttributedUsageMarksMixedPricedTokensIncomplete(t *testing.T) {
 		start,
 		end,
 		events[len(events)-1].ID,
+		QuotaAttributionTrigger{},
 		quotaObservationPricingResolver(t, true),
 	)
 	if err != nil {
@@ -115,6 +116,7 @@ func TestSumQuotaAttributedUsageMarksTotalOnlyUnpricedTokensIncomplete(t *testin
 		start,
 		start.Add(time.Hour),
 		event.ID,
+		QuotaAttributionTrigger{},
 		quotaObservationPricingResolver(t, true),
 	)
 	if err != nil {
@@ -160,6 +162,7 @@ func TestSumQuotaAttributedUsageStopsAtCapturedWatermark(t *testing.T) {
 		start,
 		start.Add(time.Hour),
 		events[0].ID,
+		QuotaAttributionTrigger{},
 		quotaObservationPricingResolver(t, true),
 	)
 	if err != nil {
@@ -207,12 +210,137 @@ func TestQuotaObservationWatermarkExcludesEventsAfterObservationTime(t *testing.
 		t.Fatalf("seed usage events: %v", err)
 	}
 
-	watermark, err := MaxUsageEventIDForCredential(context.Background(), db, "oauth", "auth-1", 0, observedAt)
+	watermark, err := MaxUsageEventIDForCredential(context.Background(), db, "oauth", "auth-1", 0, observedAt, QuotaAttributionTrigger{})
 	if err != nil {
 		t.Fatalf("MaxUsageEventIDForCredential returned error: %v", err)
 	}
 	if watermark != events[0].ID {
 		t.Fatalf("watermark = %d, want eligible event ID %d", watermark, events[0].ID)
+	}
+}
+
+func TestSumQuotaAttributedUsageIncludesExactHeaderTriggerOnceAndPreservesWatermark(t *testing.T) {
+	db := openQuotaObservationRepositoryDatabase(t)
+	start := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	events := []entities.UsageEvent{
+		{
+			EventKey:     "trigger-at-end",
+			AuthType:     "oauth",
+			AuthIndex:    "auth-1",
+			Model:        "priced",
+			Timestamp:    start.Add(-time.Minute),
+			OutputTokens: 5_000,
+			TotalTokens:  5_000,
+		},
+		{
+			EventKey:            "inside-and-trigger",
+			AuthType:            "oauth",
+			AuthIndex:           "auth-1",
+			Model:               "priced",
+			Timestamp:           end.Add(-time.Minute),
+			InputTokens:         100,
+			OutputTokens:        200,
+			CacheReadTokens:     300,
+			CacheCreationTokens: 400,
+			TotalTokens:         1_000,
+		},
+		{
+			EventKey:            "trigger-at-end",
+			AuthType:            "oauth",
+			AuthIndex:           "auth-1",
+			Model:               "priced",
+			Timestamp:           end,
+			InputTokens:         10,
+			OutputTokens:        20,
+			CacheReadTokens:     30,
+			CacheCreationTokens: 40,
+			TotalTokens:         100,
+		},
+	}
+	if err := db.Create(&events).Error; err != nil {
+		t.Fatalf("seed usage events: %v", err)
+	}
+
+	watermark, err := MaxUsageEventIDForCredential(
+		context.Background(),
+		db,
+		"oauth",
+		"auth-1",
+		0,
+		end,
+		QuotaAttributionTrigger{EventID: events[2].ID, EventKey: "trigger-at-end"},
+	)
+	if err != nil {
+		t.Fatalf("MaxUsageEventIDForCredential returned error: %v", err)
+	}
+	if watermark != events[2].ID {
+		t.Fatalf("header watermark = %d, want trigger ID %d", watermark, events[2].ID)
+	}
+	laterEvents := []entities.UsageEvent{
+		{
+			EventKey:     "after-watermark",
+			AuthType:     "oauth",
+			AuthIndex:    "auth-1",
+			Model:        "priced",
+			Timestamp:    end.Add(-time.Second),
+			OutputTokens: 9_000,
+			TotalTokens:  9_000,
+		},
+		{
+			EventKey:    "wrong-credential-trigger",
+			AuthType:    "oauth",
+			AuthIndex:   "auth-2",
+			Model:       "priced",
+			Timestamp:   end,
+			TotalTokens: 8_000,
+		},
+	}
+	if err := db.Create(&laterEvents).Error; err != nil {
+		t.Fatalf("seed post-watermark usage events: %v", err)
+	}
+
+	attribution, err := SumQuotaAttributedUsage(
+		context.Background(),
+		db,
+		"oauth",
+		"auth-1",
+		start,
+		end,
+		watermark,
+		QuotaAttributionTrigger{EventID: events[2].ID, EventKey: "trigger-at-end"},
+		quotaObservationPricingResolver(t, true),
+	)
+	if err != nil {
+		t.Fatalf("SumQuotaAttributedUsage returned error: %v", err)
+	}
+	if attribution.TotalTokens != 1_100 ||
+		attribution.InputTokens != 110 ||
+		attribution.OutputTokens != 220 ||
+		attribution.CacheReadTokens != 330 ||
+		attribution.CacheCreationTokens != 440 {
+		t.Fatalf("unexpected header attribution or double count: %+v", attribution)
+	}
+	if !attribution.CostComplete || attribution.PricingSnapshotHash == "" {
+		t.Fatalf("expected complete frozen pricing attribution, got %+v", attribution)
+	}
+
+	alreadyInside, err := SumQuotaAttributedUsage(
+		context.Background(),
+		db,
+		"oauth",
+		"auth-1",
+		start,
+		end,
+		watermark,
+		QuotaAttributionTrigger{EventID: events[1].ID, EventKey: "inside-and-trigger"},
+		quotaObservationPricingResolver(t, true),
+	)
+	if err != nil {
+		t.Fatalf("SumQuotaAttributedUsage inside trigger returned error: %v", err)
+	}
+	if alreadyInside.TotalTokens != 1_000 {
+		t.Fatalf("trigger inside half-open bound counted more than once: %+v", alreadyInside)
 	}
 }
 
@@ -236,6 +364,23 @@ func TestInsertQuotaObservationEnforcesSpacingResetExceptionAndDailyCap(t *testi
 	result, err = InsertQuotaObservationIfDue(context.Background(), db, resetBoundary, 5*time.Minute, 400)
 	if err != nil || result != QuotaObservationInserted {
 		t.Fatalf("expected reset-boundary exception: result=%s err=%v", result, err)
+	}
+
+	outOfOrder := quotaObservationRepositoryRow(observedAt.Add(-time.Hour), resetAt)
+	outOfOrder.Source = "usage_header"
+	result, err = InsertQuotaObservationIfDue(context.Background(), db, outOfOrder, 5*time.Minute, 400)
+	if err != nil || result != QuotaObservationInserted {
+		t.Fatalf("expected spaced out-of-order header insert: result=%s err=%v", result, err)
+	}
+	result, err = InsertQuotaObservationIfDue(context.Background(), db, outOfOrder, 5*time.Minute, 400)
+	if err != nil || result != QuotaObservationSkipped {
+		t.Fatalf("expected out-of-order header replay skip: result=%s err=%v", result, err)
+	}
+	nearOutOfOrder := quotaObservationRepositoryRow(observedAt.Add(-time.Hour+time.Minute), resetAt)
+	nearOutOfOrder.Source = "usage_header"
+	result, err = InsertQuotaObservationIfDue(context.Background(), db, nearOutOfOrder, 5*time.Minute, 400)
+	if err != nil || result != QuotaObservationInserted {
+		t.Fatalf("expected out-of-order header to bypass forward-only spacing: result=%s err=%v", result, err)
 	}
 
 	var currentCount int64

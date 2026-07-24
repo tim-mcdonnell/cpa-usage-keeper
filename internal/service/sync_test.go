@@ -428,11 +428,25 @@ func TestProcessRedisUsageInboxCoalescesUsageHeaderQuotaSnapshotsByAuthIndex(t *
 	for _, snapshot := range appender.snapshots {
 		snapshotsByAuthIndex[snapshot.AuthIndex] = snapshot
 	}
-	if snapshotsByAuthIndex["codex-auth"].Headers.Get("X-Codex-Primary-Used-Percent") != "8" {
+	if snapshotsByAuthIndex["codex-auth"].Headers.Get("X-Codex-Primary-Used-Percent") != "8" ||
+		snapshotsByAuthIndex["codex-auth"].TriggeringEventID <= 0 ||
+		snapshotsByAuthIndex["codex-auth"].TriggeringEventKey != "header-quota-new" {
 		t.Fatalf("expected latest codex-auth header snapshot, got %+v", snapshotsByAuthIndex["codex-auth"])
 	}
-	if snapshotsByAuthIndex["other-codex-auth"].Headers.Get("X-Codex-Primary-Used-Percent") != "20" {
+	if snapshotsByAuthIndex["other-codex-auth"].Headers.Get("X-Codex-Primary-Used-Percent") != "20" ||
+		snapshotsByAuthIndex["other-codex-auth"].TriggeringEventID <= 0 ||
+		snapshotsByAuthIndex["other-codex-auth"].TriggeringEventKey != "header-quota-other" {
 		t.Fatalf("expected other auth header snapshot, got %+v", snapshotsByAuthIndex["other-codex-auth"])
+	}
+	for authIndex, snapshot := range snapshotsByAuthIndex {
+		var triggeringEvent entities.UsageEvent
+		if err := db.First(&triggeringEvent, snapshot.TriggeringEventID).Error; err != nil {
+			t.Fatalf("load %s triggering event: %v", authIndex, err)
+		}
+		if triggeringEvent.EventKey != snapshot.TriggeringEventKey ||
+			triggeringEvent.AuthIndex != snapshot.AuthIndex {
+			t.Fatalf("snapshot did not preserve exact triggering row: snapshot=%+v event=%+v", snapshot, triggeringEvent)
+		}
 	}
 }
 
