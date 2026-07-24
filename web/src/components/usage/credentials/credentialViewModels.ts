@@ -54,6 +54,10 @@ export interface DisplayQuota {
   windowSeconds?: number
   windowUsage?: QuotaWindowUsageDisplay
   windowUsageEstimate?: QuotaWindowUsageDisplay
+  capacityDetail?: {
+    windowKindID: string
+    epochResetAt?: string
+  }
   billingUsage?: QuotaBillingUsageDisplay
   status: QuotaStatus
 }
@@ -248,6 +252,14 @@ function toDisplayQuota(row: UsageQuotaRow, capacityWindow?: UsageQuotaCapacityW
     windowSeconds,
     windowUsage: quotaWindowUsage(row),
     windowUsageEstimate: quotaWindowUsageEstimate(row, percentDisplay, capacityWindow?.current_epoch),
+    ...(capacityWindow ? {
+      capacityDetail: {
+        windowKindID: capacityWindow.window_kind_id,
+        ...(capacityWindow.current_epoch?.epoch_reset_at
+          ? { epochResetAt: capacityWindow.current_epoch.epoch_reset_at }
+          : {}),
+      },
+    } : {}),
     billingUsage: quotaBillingUsage(row),
     status: quotaStatus(row, percentDisplay.percent, percentDisplay.kind),
   }

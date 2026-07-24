@@ -1,4 +1,4 @@
-import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaCapacityResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
+import { type AnalysisLatencyDiagnostics, type AnalysisResponse, type AuthFilesManagementResponse, type AuthManagedSessionsResponse, type AuthSessionResponse, type CpaApiKeyDisplayItem, type CpaApiKeyOptionsResponse, type CpaApiKeySettingsResponse, type CpaApiKeysResponse, type OverviewRealtimeBlock, type OverviewRealtimeWindow, type PricingEntry, type PricingResponse, type PricingRulesResponse, type PricingSyncPreviewResponse, type QuotaAutoRefreshSettings, type ReplacePricingRulesRequest, type StatusResponse, type UpdateCheckResponse, type UsageActivityRequest, type UsageActivityResponse, type UsageEventModelFilterOptionsResponse, type UsageEventRequestLogResponse, type UsageEventSourceFilterOptionsResponse, type UsageRangeRequest, type UsedModelsResponse, type UsageIdentitiesPageResponse, type UsageIdentitiesResponse, type UsageEventsResponse, type UsageIdentity, type UsageIdentityAuthType, type UsageOverviewResponse, type UsageQuotaCacheResponse, type UsageQuotaCapacityDetailResponse, type UsageQuotaCapacityResponse, type UsageQuotaInspectionStatusResponse, type UsageQuotaRefreshResponse, type UsageQuotaRefreshTaskResponse, type UsageQuotaResetCreditsResponse, type UsageQuotaResetResponse, type VersionResponse } from './types'
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed'
 import { resolveUsageRequestRange } from '@/utils/usage/rangeQuery'
 
@@ -611,6 +611,30 @@ export async function fetchUsageQuotaCapacity(authIndexes: string[], signal?: Ab
   })
   if (!response.ok) {
     await parseApiError(response, `Failed to load quota capacity estimates: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function fetchUsageQuotaCapacityDetail(
+  authIndex: string,
+  windowKindID: string,
+  epochResetAt?: string,
+  signal?: AbortSignal,
+): Promise<UsageQuotaCapacityDetailResponse> {
+  const params = new URLSearchParams({
+    auth_index: authIndex,
+    window_kind_id: windowKindID,
+  })
+  if (epochResetAt) {
+    params.set('epoch_reset_at', epochResetAt)
+  }
+  const response = await apiFetch(`${apiPath('/quota/capacity/detail')}?${params.toString()}`, {
+    method: 'GET',
+    signal,
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    await parseApiError(response, `Failed to load quota capacity detail: ${response.status}`)
   }
   return response.json()
 }

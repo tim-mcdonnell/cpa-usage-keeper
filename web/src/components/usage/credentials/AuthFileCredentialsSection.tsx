@@ -11,6 +11,7 @@ import type { AuthFileCredentialRow, DisplayQuota, PlanTypeTone, QuotaCapacityFl
 import { deleteAuthFiles, fetchQuotaAutoRefreshSettings, fetchUsageQuotaResetCredits, setAuthFilesDisabled, updateQuotaAutoRefreshSettings, type UsageIdentityPageSort } from '@/lib/api'
 import type { QuotaAutoRefreshScheduleUnit, QuotaAutoRefreshSettings, UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse, UsageQuotaResetCreditsResponse } from '@/lib/types'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
+import { CapacityDetailModal, type CapacityDetailModalTarget } from './CapacityDetailModal'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
 import { CredentialProviderFilterIcon } from './CredentialProviderFilterBar'
 import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, capitalize, credentialToneClassName, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
@@ -110,11 +111,13 @@ interface AuthFileCredentialsSectionProps {
   onAfterInvalidAccountAction?: () => Promise<void>
   quotaUsageMode?: QuotaUsageMode
   onQuotaUsageModeChange?: (mode: QuotaUsageMode) => void
+  onAuthRequired?: () => void
 }
 
-export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onResetQuotaForAuthIndex, aliasSavingId, onSaveAlias, onRefreshInspectionStatus, onStartInspection, onAfterInvalidAccountAction, quotaUsageMode: controlledQuotaUsageMode, onQuotaUsageModeChange }: AuthFileCredentialsSectionProps) {
+export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onResetQuotaForAuthIndex, aliasSavingId, onSaveAlias, onRefreshInspectionStatus, onStartInspection, onAfterInvalidAccountAction, quotaUsageMode: controlledQuotaUsageMode, onQuotaUsageModeChange, onAuthRequired }: AuthFileCredentialsSectionProps) {
   const { t } = useTranslation()
   const [inspectionOpen, setInspectionOpen] = useState(false)
+  const [capacityDetailTarget, setCapacityDetailTarget] = useState<CapacityDetailModalTarget | null>(null)
   const [localQuotaUsageMode, setLocalQuotaUsageMode] = useState<QuotaUsageMode>('current')
   const quotaUsageMode = controlledQuotaUsageMode ?? localQuotaUsageMode
   const [displayMode, setDisplayModeState] = useState<AuthFileDisplayMode>(() => readStoredAuthFileDisplayMode())
@@ -328,7 +331,18 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
               <CredentialHealthPanel displayName={row.displayName} health={row.credentialHealth} lastUsedAt={row.identity.last_used_at} statsUpdatedAt={row.identity.stats_updated_at} />
             ) : (
               <div className={styles.credentialQuotaSideWithAction}>
-                <AuthFileQuotaPanel row={row} quotaUsageMode={quotaUsageMode} />
+                <AuthFileQuotaPanel
+                  row={row}
+                  quotaUsageMode={quotaUsageMode}
+                  onOpenCapacityDetail={(detail) => {
+                    setCapacityDetailTarget({
+                      authIndex: row.identity.identity,
+                      credentialName: row.displayName,
+                      windowKindID: detail.windowKindID,
+                      ...(detail.epochResetAt ? { epochResetAt: detail.epochResetAt } : {}),
+                    })
+                  }}
+                />
                 <div className={styles.credentialQuotaActionStack}>
                   {/* reset 按钮只在官方缓存给出可用次数时展示；refresh 始终保留在右侧列居中位置。 */}
                   {resetCredits > 0 && (
@@ -406,6 +420,12 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
         onStart={onStartInspection}
         onRefreshStatus={onRefreshInspectionStatus}
         onAfterInvalidAccountAction={onAfterInvalidAccountAction}
+      />
+      <CapacityDetailModal
+        open={capacityDetailTarget !== null}
+        target={capacityDetailTarget}
+        onClose={() => setCapacityDetailTarget(null)}
+        onAuthRequired={onAuthRequired}
       />
     </>
   )
@@ -1619,7 +1639,15 @@ function isAuthFileDisplayMode(value: string | null | undefined): value is AuthF
   return value === 'quota' || value === 'health'
 }
 
-export function AuthFileQuotaPanel({ row, quotaUsageMode }: { row: AuthFileCredentialRow; quotaUsageMode: QuotaUsageMode }) {
+export function AuthFileQuotaPanel({
+  row,
+  quotaUsageMode,
+  onOpenCapacityDetail,
+}: {
+  row: AuthFileCredentialRow
+  quotaUsageMode: QuotaUsageMode
+  onOpenCapacityDetail?: (detail: NonNullable<DisplayQuota['capacityDetail']>) => void
+}) {
   const { t } = useTranslation()
 
   // 限额区域按加载、错误、刷新中、无缓存、可展示数据的顺序降级。
@@ -1648,7 +1676,14 @@ export function AuthFileQuotaPanel({ row, quotaUsageMode }: { row: AuthFileCrede
     <div className={styles.credentialQuotaPanel}>
       <div className={styles.credentialQuotaBars}>
         {/* 每个可计算进度的 quota 都独占一个稳定块；不可进度化 quota 在 view model 中已过滤。 */}
-        {row.displayQuotas.map((quota) => <QuotaBar key={quota.key} quota={quota} quotaUsageMode={quotaUsageMode} />)}
+        {row.displayQuotas.map((quota) => (
+          <QuotaBar
+            key={quota.key}
+            quota={quota}
+            quotaUsageMode={quotaUsageMode}
+            onOpenCapacityDetail={onOpenCapacityDetail}
+          />
+        ))}
       </div>
     </div>
   )
@@ -1869,7 +1904,15 @@ export function formatQuotaBillingUsageAriaLabel(t: Translate, billingUsage: Non
   })
 }
 
-function QuotaBar({ quota, quotaUsageMode }: { quota: DisplayQuota; quotaUsageMode: QuotaUsageMode }) {
+function QuotaBar({
+  quota,
+  quotaUsageMode,
+  onOpenCapacityDetail,
+}: {
+  quota: DisplayQuota
+  quotaUsageMode: QuotaUsageMode
+  onOpenCapacityDetail?: (detail: NonNullable<DisplayQuota['capacityDetail']>) => void
+}) {
   const { t } = useTranslation()
   const groupTooltipId = useId()
   const capacityTooltipId = useId()
@@ -1886,12 +1929,23 @@ function QuotaBar({ quota, quotaUsageMode }: { quota: DisplayQuota; quotaUsageMo
     && Boolean(windowUsage?.capacitySource)
   const capacityTooltip = showingCapacity && windowUsage ? quotaCapacityTooltip(t, windowUsage) : ''
   const hasGroupDescription = Boolean(quota.groupDescription?.trim())
+  const capacityDetail = quota.capacityDetail
 
   return (
     <div className={styles.credentialQuotaBarBlock}>
       <div className={styles.credentialQuotaBarHeader}>
         <span className={styles.credentialQuotaLabelGroup}>
           <span>{quota.label}</span>
+          {quotaUsageMode === 'estimated' && capacityDetail && (
+            <button
+              type="button"
+              className={styles.credentialQuotaCapacityOpen}
+              aria-label={t('usage_stats.credentials_capacity_open')}
+              onClick={() => onOpenCapacityDetail?.(capacityDetail)}
+            >
+              <IconChartLine size={12} />
+            </button>
+          )}
         </span>
         {(resetDuration || percentLabel) && (
           <span className={styles.credentialQuotaValueGroup}>

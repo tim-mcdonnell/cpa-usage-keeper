@@ -2102,6 +2102,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       onRefreshInspectionStatus={credentialsData.refreshQuotaInspectionStatus}
                       onStartInspection={credentialsData.startQuotaInspection}
                       onAfterInvalidAccountAction={credentialsData.refresh}
+                      onAuthRequired={onAuthRequired}
                     />
                   )}
                   {credentialSectionVisibility.showAiProvider && (

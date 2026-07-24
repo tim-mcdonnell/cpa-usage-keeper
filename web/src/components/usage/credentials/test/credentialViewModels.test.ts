@@ -412,6 +412,33 @@ describe('credentialViewModels', () => {
     expect(rows[0].displayQuotas[0].windowUsageEstimate).toEqual(expected)
   })
 
+  it('carries only the canonical window identity and selected epoch into the drill-down target', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.secondary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const estimate = capacityEstimate('insufficient')
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', credentialCapacity(estimate)]]),
+    )
+
+    expect(rows[0].displayQuotas[0].capacityDetail).toEqual({
+      windowKindID: 'codex/overall/rate_limit/18000',
+      epochResetAt: '2026-07-24T00:00:00Z',
+    })
+    expect(JSON.stringify(rows[0].displayQuotas[0].capacityDetail)).not.toContain('secondary')
+  })
+
   it('silently preserves the one-point display when capacity history is absent', () => {
     const quotas = new Map<string, UsageQuotaCheckResponse>([
       ['auth-1', quotaResponse('auth-1', [{

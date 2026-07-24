@@ -97,16 +97,34 @@ func TestCapacityDetailReturnsFullEstimateAndExactObservationSeries(t *testing.T
 	response, err := service.GetCapacityDetail(context.Background(), quota.CapacityDetailRequest{
 		AuthIndex:    " auth-data ",
 		WindowKindID: estimate.WindowKindCodexFiveHour,
+		EpochResetAt: estimates[2].EpochResetAt,
 	})
 	if err != nil {
 		t.Fatalf("GetCapacityDetail returned error: %v", err)
 	}
 	if response.Estimate.EpochResetAt == nil ||
 		estimates[0].EpochResetAt == nil ||
-		!response.Estimate.EpochResetAt.Equal(*estimates[0].EpochResetAt) ||
+		!response.Estimate.EpochResetAt.Equal(*estimates[2].EpochResetAt) ||
 		len(response.Estimate.Points) != 1 ||
 		len(response.Estimate.FittedSeries) != 1 {
 		t.Fatalf("detail estimate lost coherent diagnostics: %+v", response.Estimate)
+	}
+	if len(response.Epochs) != 9 {
+		t.Fatalf("detail epoch summaries = %d, want current plus eight completed epochs", len(response.Epochs))
+	}
+	for index, epoch := range response.Epochs {
+		if epoch.WindowKindID != estimate.WindowKindCodexFiveHour {
+			t.Fatalf("epoch %d split canonical window identity: %+v", index, epoch)
+		}
+		if len(epoch.Points) != 0 || len(epoch.FittedSeries) != 0 {
+			t.Fatalf("epoch %d retained plot detail: %+v", index, epoch)
+		}
+		if index > 0 &&
+			response.Epochs[index-1].EpochResetAt != nil &&
+			epoch.EpochResetAt != nil &&
+			response.Epochs[index-1].EpochResetAt.Before(*epoch.EpochResetAt) {
+			t.Fatalf("epoch summaries are not newest first: %+v", response.Epochs)
+		}
 	}
 	if len(response.Observations) != 1 || response.Observations[0].ID != observation.ID {
 		t.Fatalf("detail observations do not match estimate points: %+v", response.Observations)

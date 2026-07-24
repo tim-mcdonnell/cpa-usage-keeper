@@ -473,9 +473,18 @@ export interface UsageQuotaCapacitySegment {
   end: string
 }
 
+export type UsageQuotaCapacityPointClass =
+  | 'included'
+  | 'outlier'
+  | 'coverage_gap_interval'
+  | 'stale_quarantined'
+  | 'pricing_excluded'
+  | 'pre_break'
+  | 'epoch_unassigned'
+
 export interface UsageQuotaCapacityPointDiagnostic {
   observation_id: number
-  class: 'included' | 'outlier' | 'coverage_gap_interval' | 'stale_quarantined' | 'pricing_excluded' | 'pre_break' | 'epoch_unassigned'
+  class: UsageQuotaCapacityPointClass
   cumulative_percent_offset: number
 }
 
@@ -533,6 +542,30 @@ export interface UsageQuotaCapacityItem {
 
 export interface UsageQuotaCapacityResponse {
   items: UsageQuotaCapacityItem[]
+}
+
+export interface UsageQuotaCapacityObservation {
+  id: number
+  auth_index: string
+  provider: string
+  window_kind_id: string
+  quota_key: string
+  scope: string
+  group_key: string
+  window_role: string
+  observed_at: string
+  source: string
+  used_percent: number | null
+  attributed_tokens: number | null
+  attributed_cost_usd: number | null
+  attributed_cost_complete: boolean
+  pricing_snapshot_hash: string
+}
+
+export interface UsageQuotaCapacityDetailResponse {
+  estimate: UsageQuotaWindowEstimate
+  observations: UsageQuotaCapacityObservation[]
+  epochs: UsageQuotaWindowEstimate[]
 }
 
 export interface AuthFilesManagementResponse {
