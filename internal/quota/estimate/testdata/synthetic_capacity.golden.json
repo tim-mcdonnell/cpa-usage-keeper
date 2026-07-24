@@ -233,6 +233,100 @@
     ]
   },
   {
+    "name": "residual_nonzero_coverage_bypass",
+    "estimates": [
+      {
+        "epoch_reset_at": "2026-07-23T17:00:00Z",
+        "confidence": "low",
+        "flags": [
+          "coverage_gap"
+        ],
+        "sample_count": 12,
+        "effective_samples": 11,
+        "distinct_percents": 11,
+        "percent_resolution": 5,
+        "percent_span": 55,
+        "marginal_tokens_per_100": 2000,
+        "tokens_at_100": 1800,
+        "tokens_ci_95": {
+          "low": 1800,
+          "high": 1800,
+          "unbounded_high": false
+        },
+        "cost_at_100": 1.8,
+        "cost_segment": {
+          "hash": "pricing-a",
+          "start": "2026-07-23T12:00:00Z",
+          "end": "2026-07-23T13:50:00Z"
+        },
+        "slope_instability": 0,
+        "point_class_counts": {
+          "coverage_gap_interval": 1,
+          "included": 11
+        },
+        "nonzero_offsets": [
+          {
+            "observation_id": 7,
+            "offset": 12
+          },
+          {
+            "observation_id": 8,
+            "offset": 12
+          },
+          {
+            "observation_id": 9,
+            "offset": 12
+          },
+          {
+            "observation_id": 10,
+            "offset": 12
+          },
+          {
+            "observation_id": 11,
+            "offset": 12
+          },
+          {
+            "observation_id": 12,
+            "offset": 12
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "residual_clean_model_noise",
+    "estimates": [
+      {
+        "epoch_reset_at": "2026-07-23T17:00:00Z",
+        "confidence": "high",
+        "flags": [],
+        "sample_count": 12,
+        "effective_samples": 12,
+        "distinct_percents": 12,
+        "percent_resolution": 4,
+        "percent_span": 56,
+        "marginal_tokens_per_100": 1989,
+        "tokens_at_100": 1786,
+        "tokens_ci_95": {
+          "low": 1733.378318,
+          "high": 1864.199323,
+          "unbounded_high": false
+        },
+        "cost_at_100": 1.786416,
+        "cost_segment": {
+          "hash": "pricing-a",
+          "start": "2026-07-23T12:00:00Z",
+          "end": "2026-07-23T13:50:00Z"
+        },
+        "slope_instability": 0,
+        "point_class_counts": {
+          "included": 12
+        },
+        "nonzero_offsets": null
+      }
+    ]
+  },
+  {
     "name": "concurrent_bypass_biased_without_flag",
     "estimates": [
       {

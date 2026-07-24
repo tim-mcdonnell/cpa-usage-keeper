@@ -127,6 +127,17 @@ func syntheticGoldenScenarios() []syntheticScenario {
 		)
 	}
 
+	residualCoverage := linearSeries(12, 100, 10, 5)
+	for index := 6; index < len(residualCoverage); index++ {
+		percent := *residualCoverage[index].UsedPercent + 12
+		residualCoverage[index].UsedPercent = &percent
+	}
+
+	cleanNoise := percentSeries(
+		[]float64{10, 15, 21, 25, 30, 36, 40, 45, 51, 55, 60, 66},
+		100,
+	)
+
 	concurrent := linearSeries(10, 100, 10, 5)
 	for index := 5; index < len(concurrent); index++ {
 		percent := *concurrent[index].UsedPercent + float64(index-4)*3
@@ -252,6 +263,8 @@ func syntheticGoldenScenarios() []syntheticScenario {
 		{name: "unstable_bootstrap_slope", observations: unstable},
 		{name: "zero_coverage_bypass", observations: coverage},
 		{name: "coverage_contamination_suppressed", observations: coverageSuppressed},
+		{name: "residual_nonzero_coverage_bypass", observations: residualCoverage},
+		{name: "residual_clean_model_noise", observations: cleanNoise},
 		{name: "concurrent_bypass_biased_without_flag", observations: concurrent},
 		{name: "absolute_reset_beyond_tolerance", observations: absoluteJitter},
 		{name: "derived_reset_beyond_tolerance", observations: derivedJitter},
