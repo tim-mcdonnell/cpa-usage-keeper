@@ -88,7 +88,8 @@ type UsageAggregationRunner struct {
 	identityTargetGeneration uint64
 	// identityScanGeneration 记录当前分页扫描开始时已经观察到的通知代际。
 	identityScanGeneration uint64
-	// pendingHeaders 按 auth_index 只保留等待 gate 的最新 snapshot。
+	// pendingHeaders 是 sampled-recording 的第二个 coalescing seam。
+	// 每个 auth_index 只有 Overview gate 前最终存活的 snapshot 可继续成为 observation。
 	pendingHeaders map[string]pendingUsageHeaderSnapshot
 	// wake 合并连续通知，调用前台永远不等待后台消费。
 	wake chan struct{}

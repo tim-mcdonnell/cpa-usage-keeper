@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -14,7 +13,10 @@ import (
 
 	"cpa-usage-keeper/internal/cpa/dto/apicall"
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/poller"
 	. "cpa-usage-keeper/internal/quota"
+	"cpa-usage-keeper/internal/repository"
+	syncservice "cpa-usage-keeper/internal/service"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -1530,6 +1532,9 @@ func TestManualRefreshPersistsRetrievablePollQuotaObservation(t *testing.T) {
 		*observation.ResetRaw != resetAt.Format(time.RFC3339) {
 		t.Fatalf("unexpected manual observation: %+v", observation)
 	}
+	if observation.TriggeringEventKey != nil {
+		t.Fatalf("poll observation unexpectedly included a triggering event: %+v", observation.TriggeringEventKey)
+	}
 	if observation.AttributedTokens == nil || *observation.AttributedTokens != 0 ||
 		observation.AttributedCostUSD == nil || *observation.AttributedCostUSD != 0 ||
 		!observation.AttributedCostComplete {
@@ -1549,18 +1554,19 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 			AuthTypeName: "oauth",
 		})
 	}
-	resetAt := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Second)
+	pollResetAt := now.Add(7 * 24 * time.Hour)
 	handler := &refreshHandlerStub{output: ProviderOutput{
 		Provider: "codex",
 		Result: CodexResult{Usage: &CodexUsagePayload{
 			RateLimit: &CodexRateLimitInfo{PrimaryWindow: &CodexUsageWindow{
 				UsedPercent:        12.5,
-				LimitWindowSeconds: 18000,
-				ResetAt:            resetAt.Unix(),
+				LimitWindowSeconds: 604800,
+				ResetAt:            pollResetAt.Unix(),
 			}},
 		}},
 	}}
-	service := newQuotaServiceWithRegistryAndOptions(
+	quotaService := newQuotaServiceWithRegistryAndOptions(
 		t,
 		db,
 		NewProviderRegistry(map[string]ProviderHandler{"codex": handler}),
@@ -1569,7 +1575,19 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 			UsageHeaderSnapshotFlushInterval: 5 * time.Millisecond,
 		},
 	)
-	setRefreshCooldown(service, func(time.Duration) {})
+	setRefreshCooldown(quotaService, func(time.Duration) {})
+	aggregationRunner := poller.NewUsageAggregationRunner(db, quotaService)
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	t.Cleanup(cancelRunner)
+	runnerDone := make(chan error, 1)
+	go func() {
+		runnerDone <- aggregationRunner.Run(runnerCtx)
+	}()
+	syncService := syncservice.NewSyncServiceWithOptions(db, syncservice.SyncServiceOptions{
+		BaseURL:                  "https://cpa.example.com",
+		Now:                      func() time.Time { return now },
+		UsageAggregationNotifier: aggregationRunner,
+	})
 
 	start := make(chan struct{})
 	errCh := make(chan error, 3)
@@ -1579,19 +1597,46 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 	go func() {
 		defer workers.Done()
 		<-start
-		for index := 0; index < 80; index++ {
-			authIndex := authIndexes[index%len(authIndexes)]
-			event := entities.UsageEvent{
-				EventKey:    fmt.Sprintf("load-event-%d", index),
-				AuthType:    "oauth",
-				AuthIndex:   authIndex,
-				Model:       "unpriced-load-model",
-				Timestamp:   time.Now(),
-				InputTokens: int64(index + 1),
-				TotalTokens: int64(index + 1),
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for batchStart := 0; batchStart < 80; batchStart += 20 {
+			messages := make([]string, 0, 20)
+			for index := batchStart; index < batchStart+20; index++ {
+				authIndex := authIndexes[index%len(authIndexes)]
+				observedAt := now.Add(time.Duration(index) * time.Second)
+				headerResetAt := observedAt.Add(5 * time.Hour)
+				messages = append(messages, fmt.Sprintf(`{
+					"timestamp":%q,
+					"provider":"codex",
+					"auth_type":"oauth",
+					"auth_index":%q,
+					"model":"unpriced-load-model",
+					"request_id":%q,
+					"tokens":{"input_tokens":10,"output_tokens":2,"total_tokens":12},
+					"response_headers":{
+						"X-Codex-Primary-Used-Percent":[%q],
+						"X-Codex-Primary-Window-Minutes":["300"],
+						"X-Codex-Primary-Reset-At":[%q]
+					}
+				}`,
+					observedAt.Format(time.RFC3339),
+					authIndex,
+					fmt.Sprintf("load-event-%d", index),
+					strconv.Itoa(10+index%20),
+					strconv.FormatInt(headerResetAt.Unix(), 10),
+				))
 			}
-			if err := db.Create(&event).Error; err != nil {
-				errCh <- fmt.Errorf("ingest usage event %d: %w", index, err)
+			if _, err := repository.InsertRedisUsageInboxRawMessages(db, "redis_pull:usage", messages, now); err != nil {
+				errCh <- fmt.Errorf("enqueue usage inbox batch %d: %w", batchStart/20, err)
+				return
+			}
+			result, err := syncService.ProcessRedisUsageInbox(ctx)
+			if err != nil {
+				errCh <- fmt.Errorf("process usage inbox batch %d: %w", batchStart/20, err)
+				return
+			}
+			if result == nil || result.InsertedEvents != 20 {
+				errCh <- fmt.Errorf("usage inbox batch %d inserted %+v", batchStart/20, result)
 				return
 			}
 		}
@@ -1599,35 +1644,27 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 	go func() {
 		defer workers.Done()
 		<-start
-		for index := 0; index < 80; index++ {
-			authIndex := authIndexes[index%len(authIndexes)]
-			accepted := service.TryAppendUsageHeaderSnapshots([]UsageHeaderSnapshot{{
-				AuthType:   "oauth",
-				AuthIndex:  authIndex,
-				Provider:   "codex",
-				ObservedAt: time.Now(),
-				Headers: http.Header{
-					"X-Codex-Primary-Used-Percent":   []string{strconv.Itoa(10 + index%20)},
-					"X-Codex-Primary-Window-Minutes": []string{"300"},
-					"X-Codex-Primary-Reset-At":       []string{strconv.FormatInt(resetAt.Unix(), 10)},
-				},
-			}})
-			if !accepted {
-				errCh <- fmt.Errorf("header snapshot %d was not accepted", index)
-				return
-			}
-		}
-	}()
-	go func() {
-		defer workers.Done()
-		<-start
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		var err error
-		refreshResponse, err = service.Refresh(context.Background(), RefreshRequest{
+		refreshResponse, err = quotaService.Refresh(ctx, RefreshRequest{
 			AuthIndexes: authIndexes,
 			Source:      RefreshSourceManual,
 		})
 		if err != nil {
 			errCh <- fmt.Errorf("refresh under load: %w", err)
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for index := 0; index < 200; index++ {
+			if _, err := quotaService.GetCachedQuota(ctx, CacheRequest{AuthIndexes: authIndexes}); err != nil {
+				errCh <- fmt.Errorf("quota cache read %d: %w", index, err)
+				return
+			}
 		}
 	}()
 	close(start)
@@ -1638,8 +1675,8 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 	}()
 	select {
 	case <-workersDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("concurrent usage, header, and refresh producers stalled")
+	case <-time.After(8 * time.Second):
+		t.Fatal("concurrent usage ingestion, poll refresh, header, or cache producer stalled")
 	}
 	close(errCh)
 	for err := range errCh {
@@ -1649,9 +1686,31 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 		t.Fatalf("refresh task count = %d, want %d", len(refreshResponse.Tasks), len(authIndexes))
 	}
 	for _, authIndex := range authIndexes {
-		waitForRefreshTask(t, service, authIndex, RefreshTaskStatusCompleted)
+		waitForRefreshTask(t, quotaService, authIndex, RefreshTaskStatusCompleted)
 	}
-	service.StopRefreshTasks()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var headerCount int64
+		if err := db.Model(&entities.QuotaObservation{}).
+			Where("source = ?", string(RefreshSourceUsageHeader)).
+			Count(&headerCount).Error; err != nil {
+			t.Fatalf("count header observations while waiting: %v", err)
+		}
+		if headerCount >= int64(len(authIndexes)) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancelRunner()
+	select {
+	case err := <-runnerDone:
+		if err != nil {
+			t.Fatalf("usage aggregation runner returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("usage aggregation runner did not stop")
+	}
+	quotaService.StopRefreshTasks()
 
 	var usageEventCount int64
 	if err := db.Model(&entities.UsageEvent{}).Count(&usageEventCount).Error; err != nil {
@@ -1660,12 +1719,29 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 	if usageEventCount != 80 {
 		t.Fatalf("usage event count = %d, want 80", usageEventCount)
 	}
-	var observationCount int64
-	if err := db.Model(&entities.QuotaObservation{}).Count(&observationCount).Error; err != nil {
-		t.Fatalf("count quota observations: %v", err)
+	var pollObservationCount int64
+	if err := db.Model(&entities.QuotaObservation{}).
+		Where("source = ?", string(RefreshSourceManual)).
+		Count(&pollObservationCount).Error; err != nil {
+		t.Fatalf("count poll quota observations: %v", err)
 	}
-	if observationCount != int64(len(authIndexes)) {
-		t.Fatalf("poll observation count = %d, want %d", observationCount, len(authIndexes))
+	if pollObservationCount != int64(len(authIndexes)) {
+		t.Fatalf("poll observation count = %d, want %d", pollObservationCount, len(authIndexes))
+	}
+	var headerObservations []entities.QuotaObservation
+	if err := db.
+		Where("source = ?", string(RefreshSourceUsageHeader)).
+		Order("id asc").
+		Find(&headerObservations).Error; err != nil {
+		t.Fatalf("load header quota observations: %v", err)
+	}
+	if len(headerObservations) < len(authIndexes) {
+		t.Fatalf("header observation count = %d, want at least %d", len(headerObservations), len(authIndexes))
+	}
+	for _, observation := range headerObservations {
+		if observation.TriggeringEventKey == nil || *observation.TriggeringEventKey == "" {
+			t.Fatalf("header observation missed triggering event under load: %+v", observation)
+		}
 	}
 }
 

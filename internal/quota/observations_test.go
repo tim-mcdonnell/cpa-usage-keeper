@@ -154,6 +154,38 @@ func TestQuotaReadingOwnsAnImmutableDeepCopy(t *testing.T) {
 	}
 }
 
+func TestQuotaHeaderReadingPreservesTriggeringEventKeyAndSource(t *testing.T) {
+	observedAt := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	reading := newQuotaHeaderReading(
+		entities.UsageIdentity{
+			ID:           7,
+			AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+			AuthTypeName: "oauth",
+			Identity:     "auth-1",
+		},
+		"codex",
+		observedAt,
+		42,
+		" trigger-event ",
+		[]QuotaRow{{
+			Key:           "rate_limit.primary_window",
+			StableLimitID: "rate_limit",
+			Scope:         "window",
+			Window:        &QuotaWindow{Seconds: int64Pointer(18000)},
+		}},
+	)
+	observation := newQuotaObservation(reading, "oauth", reading.rows[0])
+
+	if reading.source != RefreshSourceUsageHeader ||
+		!reading.observedAt.Equal(observedAt) ||
+		reading.triggeringEventID != 42 ||
+		observation.Source != string(RefreshSourceUsageHeader) ||
+		observation.TriggeringEventKey == nil ||
+		*observation.TriggeringEventKey != "trigger-event" {
+		t.Fatalf("unexpected header reading provenance: reading=%+v observation=%+v", reading, observation)
+	}
+}
+
 func TestQuotaObservationAuthTypeNormalizesLegacyIdentityLabels(t *testing.T) {
 	testCases := []struct {
 		identity entities.UsageIdentity
@@ -394,6 +426,86 @@ func TestQuotaObservationRecorderLoadsWatermarkBeforeAttribution(t *testing.T) {
 	}
 	if got, want := store.attributionWatermarkValues(), []int64{1}; !slices.Equal(got, want) {
 		t.Fatalf("attribution watermarks = %v, want %v", got, want)
+	}
+	if got := store.triggerValues(); !slices.Equal(got.watermarks, []repository.QuotaAttributionTrigger{{}}) ||
+		!slices.Equal(got.attributions, []repository.QuotaAttributionTrigger{{}}) {
+		t.Fatalf("poll attribution unexpectedly carried a trigger: %+v", got)
+	}
+}
+
+func TestQuotaObservationRecorderCarriesHeaderTriggerThroughBothAttributionGates(t *testing.T) {
+	store := &quotaObservationStoreStub{
+		maxUsageEventID: 7,
+		attribution: repository.QuotaAttributedUsage{
+			TotalTokens:         10,
+			InputTokens:         1,
+			OutputTokens:        2,
+			CacheReadTokens:     3,
+			CacheCreationTokens: 4,
+			CostComplete:        true,
+			PricingSnapshotHash: "snapshot",
+		},
+	}
+	recorder := &quotaObservationRecorder{store: store, pricing: pricing.NewCatalog(pricing.EmptySnapshot())}
+	states := make(map[quotaObservationSeriesKey]quotaObservationRecordedState)
+	start := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	reading := quotaObservationTestReading(start, start.Add(5*time.Hour), 10)
+	reading.source = RefreshSourceUsageHeader
+	reading.triggeringEventID = 42
+	reading.triggeringEventKey = "trigger-event"
+
+	recorder.record(context.Background(), reading, states)
+
+	triggers := store.triggerValues()
+	wantTriggers := []repository.QuotaAttributionTrigger{{EventID: 42, EventKey: "trigger-event"}}
+	if !slices.Equal(triggers.watermarks, wantTriggers) ||
+		!slices.Equal(triggers.attributions, wantTriggers) {
+		t.Fatalf("header trigger did not cross attribution seam: %+v", triggers)
+	}
+	inserted := store.insertedRows()
+	if len(inserted) != 1 ||
+		inserted[0].TriggeringEventKey == nil ||
+		*inserted[0].TriggeringEventKey != "trigger-event" ||
+		inserted[0].AttributedTokens == nil ||
+		*inserted[0].AttributedTokens != 10 {
+		t.Fatalf("unexpected header observation: %+v", inserted)
+	}
+}
+
+func TestQuotaObservationRecorderAcceptsOutOfOrderHeaderWithoutRegressingLatestGate(t *testing.T) {
+	store := &quotaObservationStoreStub{
+		maxUsageEventID: 2,
+		attribution: repository.QuotaAttributedUsage{
+			CostComplete:        true,
+			PricingSnapshotHash: "snapshot",
+		},
+	}
+	recorder := &quotaObservationRecorder{store: store, pricing: pricing.NewCatalog(pricing.EmptySnapshot())}
+	states := make(map[quotaObservationSeriesKey]quotaObservationRecordedState)
+	staleAt := time.Date(2026, 7, 23, 11, 0, 0, 0, time.UTC)
+	currentAt := staleAt.Add(time.Hour)
+	resetAt := currentAt.Add(4 * time.Hour)
+	recorder.record(context.Background(), quotaObservationTestReading(currentAt, resetAt, 10), states)
+	stale := quotaObservationTestReading(staleAt, resetAt, 10)
+	stale.source = RefreshSourceUsageHeader
+	stale.triggeringEventID = 1
+	stale.triggeringEventKey = "stale-trigger"
+
+	recorder.record(context.Background(), stale, states)
+
+	inserted := store.insertedRows()
+	if len(inserted) != 2 ||
+		!inserted[1].ObservedAt.Equal(staleAt) ||
+		inserted[1].Source != string(RefreshSourceUsageHeader) {
+		t.Fatalf("out-of-order header fact was not appended: %+v", inserted)
+	}
+	if len(states) != 1 {
+		t.Fatalf("unexpected recorder states: %+v", states)
+	}
+	for _, state := range states {
+		if !state.observedAt.Equal(currentAt) {
+			t.Fatalf("out-of-order header regressed latest gate to %v, want %v", state.observedAt, currentAt)
+		}
 	}
 }
 
@@ -738,6 +850,8 @@ type quotaObservationStoreStub struct {
 	attribution           repository.QuotaAttributedUsage
 	attributionCalls      int
 	attributionWatermarks []int64
+	attributionTriggers   []repository.QuotaAttributionTrigger
+	watermarkTriggers     []repository.QuotaAttributionTrigger
 	insertCalls           int
 	inserted              []entities.QuotaObservation
 	insertErr             error
@@ -748,10 +862,11 @@ type quotaObservationStoreStub struct {
 	attributionBlock   chan struct{}
 }
 
-func (s *quotaObservationStoreStub) MaxUsageEventID(context.Context, string, string, int64, time.Time) (int64, error) {
+func (s *quotaObservationStoreStub) MaxUsageEventID(_ context.Context, _ string, _ string, _ int64, _ time.Time, trigger repository.QuotaAttributionTrigger) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.operations = append(s.operations, "max")
+	s.watermarkTriggers = append(s.watermarkTriggers, trigger)
 	return s.maxUsageEventID, nil
 }
 
@@ -762,11 +877,13 @@ func (s *quotaObservationStoreStub) SumAttributedUsage(
 	_ time.Time,
 	_ time.Time,
 	watermark int64,
+	trigger repository.QuotaAttributionTrigger,
 	_ pricing.Resolver,
 ) (repository.QuotaAttributedUsage, error) {
 	s.mu.Lock()
 	s.attributionCalls++
 	s.attributionWatermarks = append(s.attributionWatermarks, watermark)
+	s.attributionTriggers = append(s.attributionTriggers, trigger)
 	s.operations = append(s.operations, "attribution")
 	entered := s.attributionEntered
 	block := s.attributionBlock
@@ -832,4 +949,18 @@ func (s *quotaObservationStoreStub) attributionWatermarkValues() []int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]int64(nil), s.attributionWatermarks...)
+}
+
+type quotaObservationTriggerValues struct {
+	watermarks   []repository.QuotaAttributionTrigger
+	attributions []repository.QuotaAttributionTrigger
+}
+
+func (s *quotaObservationStoreStub) triggerValues() quotaObservationTriggerValues {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return quotaObservationTriggerValues{
+		watermarks:   append([]repository.QuotaAttributionTrigger(nil), s.watermarkTriggers...),
+		attributions: append([]repository.QuotaAttributionTrigger(nil), s.attributionTriggers...),
+	}
 }

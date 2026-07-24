@@ -46,16 +46,18 @@ type ObservationSeriesResponse struct {
 
 // QuotaReading 是 producer 在 cache mutation 前交给 recorder 的不可变值快照。
 type QuotaReading struct {
-	identity   entities.UsageIdentity
-	provider   string
-	source     RefreshSource
-	observedAt time.Time
-	rows       []QuotaRow
+	identity           entities.UsageIdentity
+	provider           string
+	source             RefreshSource
+	observedAt         time.Time
+	triggeringEventID  int64
+	triggeringEventKey string
+	rows               []QuotaRow
 }
 
 type quotaObservationStore interface {
-	MaxUsageEventID(context.Context, string, string, int64, time.Time) (int64, error)
-	SumAttributedUsage(context.Context, string, string, time.Time, time.Time, int64, pricing.Resolver) (repository.QuotaAttributedUsage, error)
+	MaxUsageEventID(context.Context, string, string, int64, time.Time, repository.QuotaAttributionTrigger) (int64, error)
+	SumAttributedUsage(context.Context, string, string, time.Time, time.Time, int64, repository.QuotaAttributionTrigger, pricing.Resolver) (repository.QuotaAttributedUsage, error)
 	InsertIfDue(context.Context, entities.QuotaObservation, time.Duration, int64) (repository.QuotaObservationInsertResult, error)
 }
 
@@ -63,8 +65,8 @@ type repositoryQuotaObservationStore struct {
 	db *gorm.DB
 }
 
-func (s repositoryQuotaObservationStore) MaxUsageEventID(ctx context.Context, authType string, authIndex string, afterID int64, before time.Time) (int64, error) {
-	return repository.MaxUsageEventIDForCredential(ctx, s.db, authType, authIndex, afterID, before)
+func (s repositoryQuotaObservationStore) MaxUsageEventID(ctx context.Context, authType string, authIndex string, afterID int64, before time.Time, trigger repository.QuotaAttributionTrigger) (int64, error) {
+	return repository.MaxUsageEventIDForCredential(ctx, s.db, authType, authIndex, afterID, before, trigger)
 }
 
 func (s repositoryQuotaObservationStore) SumAttributedUsage(
@@ -74,9 +76,10 @@ func (s repositoryQuotaObservationStore) SumAttributedUsage(
 	start time.Time,
 	end time.Time,
 	watermark int64,
+	trigger repository.QuotaAttributionTrigger,
 	resolver pricing.Resolver,
 ) (repository.QuotaAttributedUsage, error) {
-	return repository.SumQuotaAttributedUsage(ctx, s.db, authType, authIndex, start, end, watermark, resolver)
+	return repository.SumQuotaAttributedUsage(ctx, s.db, authType, authIndex, start, end, watermark, trigger, resolver)
 }
 
 func (s repositoryQuotaObservationStore) InsertIfDue(
@@ -246,8 +249,18 @@ func (r *quotaObservationRecorder) record(
 			windowKindID:    observation.WindowKindID,
 		}
 		previous, found := states[key]
+		trigger := repository.QuotaAttributionTrigger{
+			EventID:  reading.triggeringEventID,
+			EventKey: reading.triggeringEventKey,
+		}
+		outOfOrderHeader := found &&
+			reading.source == RefreshSourceUsageHeader &&
+			reading.observedAt.Before(previous.observedAt)
 		resetChanged := found && quotaRecordedResetChanged(previous, observation)
-		accepted := !found || resetChanged || !equalFloat64Pointers(previous.usedPercent, observation.UsedPercent)
+		accepted := !found ||
+			outOfOrderHeader ||
+			resetChanged ||
+			!equalFloat64Pointers(previous.usedPercent, observation.UsedPercent)
 		watermark := previous.usageEventWatermarkID
 		watermarkLoaded := false
 		if !accepted {
@@ -258,6 +271,7 @@ func (r *quotaObservationRecorder) record(
 				observation.AuthIndex,
 				previous.usageEventWatermarkID,
 				observation.ObservedAt,
+				trigger,
 			)
 			if err != nil {
 				r.logFailure(observation, "load usage event watermark", err)
@@ -270,7 +284,10 @@ func (r *quotaObservationRecorder) record(
 		if !accepted {
 			continue
 		}
-		if found && !resetChanged && reading.observedAt.Sub(previous.observedAt) < quotaObservationMinimumSpacing {
+		if found &&
+			!outOfOrderHeader &&
+			!resetChanged &&
+			reading.observedAt.Sub(previous.observedAt) < quotaObservationMinimumSpacing {
 			continue
 		}
 		if !watermarkLoaded {
@@ -281,6 +298,7 @@ func (r *quotaObservationRecorder) record(
 				observation.AuthIndex,
 				previous.usageEventWatermarkID,
 				observation.ObservedAt,
+				trigger,
 			)
 			if err != nil {
 				r.logFailure(observation, "load usage event watermark", err)
@@ -299,6 +317,7 @@ func (r *quotaObservationRecorder) record(
 					start,
 					observation.ObservedAt,
 					watermark,
+					trigger,
 					resolver,
 				)
 				if err != nil {
@@ -319,9 +338,12 @@ func (r *quotaObservationRecorder) record(
 		}
 		switch result {
 		case repository.QuotaObservationInserted:
-			state := quotaObservationStateFromEntity(observation)
-			state.usageEventWatermarkID = watermark
-			states[key] = state
+			// Out-of-order header facts are append-only, but they must not move the in-memory latest gate backward.
+			if !found || !observation.ObservedAt.Before(previous.observedAt) {
+				state := quotaObservationStateFromEntity(observation)
+				state.usageEventWatermarkID = watermark
+				states[key] = state
+			}
 		case repository.QuotaObservationSkipped:
 			// Candidate 未持久化，不能用它推进内存 gate 状态。
 		case repository.QuotaObservationDailyLimit:
@@ -356,6 +378,20 @@ func newQuotaReading(
 		observedAt: timeutil.NormalizeStorageTime(observedAt),
 		rows:       cloneQuotaRows(rows),
 	}
+}
+
+func newQuotaHeaderReading(
+	identity entities.UsageIdentity,
+	provider string,
+	observedAt time.Time,
+	triggeringEventID int64,
+	triggeringEventKey string,
+	rows []QuotaRow,
+) QuotaReading {
+	reading := newQuotaReading(identity, provider, RefreshSourceUsageHeader, observedAt, rows)
+	reading.triggeringEventID = triggeringEventID
+	reading.triggeringEventKey = strings.TrimSpace(triggeringEventKey)
+	return reading
 }
 
 func newQuotaObservation(reading QuotaReading, authType string, row QuotaRow) entities.QuotaObservation {
@@ -398,6 +434,7 @@ func newQuotaObservation(reading QuotaReading, authType string, row QuotaRow) en
 		PricingSnapshotHash:  "",
 		CreatedAt:            reading.observedAt,
 	}
+	observation.TriggeringEventKey = nullableTrimmedString(reading.triggeringEventKey)
 	return observation
 }
 

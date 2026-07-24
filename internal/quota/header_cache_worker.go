@@ -93,7 +93,7 @@ func (s *Service) runUsageHeaderSnapshotWorker() {
 	ticker := time.NewTicker(flushInterval)
 	// worker 退出时停止 ticker，避免 runtime timer 泄漏。
 	defer ticker.Stop()
-	// pending 按 auth_index 合并快照；同一账号在一个 flush 窗口内只保留最新一份。
+	// pending 按 auth_index 合并快照；同一账号在一个 flush 窗口内只有最终存活快照可写 cache 和 observation。
 	pending := make(map[string]UsageHeaderSnapshot)
 	// worker 生命周期内持续接收入队快照、定时 flush，或响应关闭信号。
 	for {
@@ -138,12 +138,13 @@ func (s *Service) flushPendingUsageHeaderSnapshots(pending map[string]UsageHeade
 	snapshots := pendingUsageHeaderSnapshots(pending)
 	// apply 前先清空 pending，避免 apply 期间新入队数据和本批旧数据混在一起。
 	clear(pending)
-	// 真正的身份匹配、窗口统计和 quota cache 合并都集中在 apply 阶段。
+	// 真正的身份匹配、observation enqueue、窗口统计和 quota cache 合并都集中在 apply 阶段。
 	s.applyUsageHeaderSnapshots(context.Background(), snapshots)
 }
 
 func mergePendingUsageHeaderSnapshots(pending map[string]UsageHeaderSnapshot, snapshots []UsageHeaderSnapshot) {
 	// 遍历本次入队批次，把同一 flush 窗口内的快照合并到 pending map。
+	// 被覆盖的快照不进入 recorder；采样合同只记录这个间隔最终存活的快照。
 	for _, snapshot := range snapshots {
 		// 优先按 auth_index 合并，保证同一 Codex Auth File 只保留最新进度。
 		authIndex := strings.TrimSpace(snapshot.AuthIndex)
@@ -206,12 +207,8 @@ func (s *Service) applyUsageHeaderSnapshots(ctx context.Context, snapshots []Usa
 		logrus.WithError(err).WithField("snapshot_count", len(snapshots)).Warn("usage header quota identity lookup failed")
 		return
 	}
-	// header quota 还要补本地窗口 token/cost，因此每批复用一个窗口统计 provider。
+	// header quota cache 还要补本地窗口 token/cost，因此每批复用一个窗口统计 provider。
 	statsProvider := s.usageHeaderWindowStatsProvider(ctx)
-	if statsProvider == nil {
-		// 批量 header 更新必须与窗口 token/cost 使用同一统计基础；统计器不可用时整批跳过，避免写入半套 cache。
-		return
-	}
 	// 逐个应用已经通过前置解析的 header snapshot。
 	for _, snapshot := range snapshots {
 		// auth_index 在入 cache 前再 trim 一次，避免空白导致 identity map 匹配失败。
@@ -381,6 +378,17 @@ func (s *Service) applyUsageHeaderSnapshotWithIdentity(ctx context.Context, snap
 	if observedAt.IsZero() {
 		observedAt = timeutil.NormalizeStorageTime(time.Now())
 	}
+	// Observation 只使用当前 header 实际携带的 rows，并在 cache freshness 检查和任何字段级 merge 之前入队。
+	// 这保留 stale header 事实，也防止旧 poll 字段伪装成 header provenance。
+	reading := newQuotaHeaderReading(
+		identity,
+		output.Provider,
+		observedAt,
+		snapshot.TriggeringEventID,
+		snapshot.TriggeringEventKey,
+		response.Quota,
+	)
+	s.observationRecorder.enqueue(reading)
 	// active task 或更新的 completed cache 已存在时，当前 header snapshot 不应覆盖它。
 	if !s.shouldProcessUsageHeaderQuotaSnapshot(authIndex, observedAt) {
 		return false

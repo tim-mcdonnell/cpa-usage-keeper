@@ -182,6 +182,50 @@ func TestUsageAggregationRunnerGatesHeaderSnapshotsOnlyOnOverviewCheckpoint(t *t
 	assertUsageAggregationCheckpointMissing(t, db, "activity")
 }
 
+func TestUsageAggregationRunnerKeepsOnlyLatestPendingHeaderTriggerPerAuthIndex(t *testing.T) {
+	db := openUsageAggregationRunnerDatabase(t)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	events := []entities.UsageEvent{
+		{EventKey: "runner-header-old", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(-2 * time.Minute), AuthIndex: "auth-a", InputTokens: 10, TotalTokens: 10},
+		{EventKey: "runner-header-new", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(-time.Minute), AuthIndex: "auth-a", InputTokens: 20, TotalTokens: 20},
+	}
+	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
+		t.Fatalf("insert coalesced header events: %v", err)
+	}
+	var storedEvents []entities.UsageEvent
+	if err := db.Order("id asc").Find(&storedEvents).Error; err != nil {
+		t.Fatalf("load coalesced header events: %v", err)
+	}
+	appender := &recordingUsageAggregationHeaderAppender{accept: true}
+	runner := poller.NewUsageAggregationRunner(db, appender)
+	runner.NotifyUsageEventsCommitted(storedEvents[:1], []quota.UsageHeaderSnapshot{{
+		AuthType:           "oauth",
+		AuthIndex:          "auth-a",
+		Provider:           "codex",
+		ObservedAt:         now.Add(-time.Minute),
+		TriggeringEventKey: "runner-header-old",
+		Headers:            http.Header{"X-Codex-Primary-Used-Percent": []string{"12"}},
+	}})
+	runner.NotifyUsageEventsCommitted(storedEvents[1:], []quota.UsageHeaderSnapshot{{
+		AuthType:           "oauth",
+		AuthIndex:          "auth-a",
+		Provider:           "codex",
+		ObservedAt:         now,
+		TriggeringEventKey: "runner-header-new",
+		Headers:            http.Header{"X-Codex-Primary-Used-Percent": []string{"13"}},
+	}})
+
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("overview coalesced header RunOnce: %v", err)
+	}
+	if appender.callCount != 1 ||
+		len(appender.snapshots) != 1 ||
+		appender.snapshots[0].TriggeringEventKey != "runner-header-new" ||
+		appender.snapshots[0].Headers.Get("X-Codex-Primary-Used-Percent") != "13" {
+		t.Fatalf("unexpected surviving runner snapshot: calls=%d snapshots=%+v", appender.callCount, appender.snapshots)
+	}
+}
+
 func TestUsageAggregationRunnerStopsReportingIdentityWorkAfterFinalCleanPage(t *testing.T) {
 	// 准备：创建超过一页且没有待聚合事件的 identities，迫使 runner 扫描两页才能确认追平。
 	db := openUsageAggregationRunnerDatabase(t)

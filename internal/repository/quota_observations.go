@@ -26,6 +26,11 @@ type QuotaAttributedUsage struct {
 	PricingSnapshotHash string
 }
 
+type QuotaAttributionTrigger struct {
+	EventID  int64
+	EventKey string
+}
+
 type QuotaObservationInsertResult string
 
 const (
@@ -42,22 +47,33 @@ func MaxUsageEventIDForCredential(
 	authIndex string,
 	afterID int64,
 	before time.Time,
+	trigger QuotaAttributionTrigger,
 ) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("database is nil")
 	}
 	var maxID int64
-	err := db.WithContext(contextOrBackground(ctx)).
+	query := db.WithContext(contextOrBackground(ctx)).
 		Model(&entities.UsageEvent{}).
 		Select("COALESCE(MAX(id), ?)", afterID).
 		Where(
-			"auth_type = ? AND auth_index = ? AND id > ? AND timestamp < ?",
+			"auth_type = ? AND auth_index = ? AND id > ?",
 			strings.TrimSpace(authType),
 			strings.TrimSpace(authIndex),
 			afterID,
+		)
+	trigger.EventKey = strings.TrimSpace(trigger.EventKey)
+	if trigger.EventID <= 0 || trigger.EventKey == "" {
+		query = query.Where("timestamp < ?", timeutil.FormatStorageTime(before))
+	} else {
+		query = query.Where(
+			"(timestamp < ? OR (id = ? AND event_key = ?))",
 			timeutil.FormatStorageTime(before),
-		).
-		Scan(&maxID).Error
+			trigger.EventID,
+			trigger.EventKey,
+		)
+	}
+	err := query.Scan(&maxID).Error
 	if err != nil {
 		return 0, fmt.Errorf("load quota observation usage event watermark: %w", err)
 	}
@@ -73,6 +89,7 @@ func SumQuotaAttributedUsage(
 	start time.Time,
 	end time.Time,
 	watermark int64,
+	trigger QuotaAttributionTrigger,
 	resolver pricing.Resolver,
 ) (QuotaAttributedUsage, error) {
 	result := QuotaAttributedUsage{
@@ -113,17 +130,32 @@ func SumQuotaAttributedUsage(
 		", COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens"
 
 	var rows []usageWindowTokenStats
-	err := db.WithContext(contextOrBackground(ctx)).
+	query := db.WithContext(contextOrBackground(ctx)).
 		Model(&entities.UsageEvent{}).
 		Select(selectClause).
 		Where(
-			"auth_type = ? AND auth_index = ? AND timestamp >= ? AND timestamp < ? AND id <= ?",
+			"auth_type = ? AND auth_index = ? AND id <= ?",
 			authType,
 			authIndex,
+			watermark,
+		)
+	trigger.EventKey = strings.TrimSpace(trigger.EventKey)
+	if trigger.EventID <= 0 || trigger.EventKey == "" {
+		query = query.Where(
+			"timestamp >= ? AND timestamp < ?",
 			timeutil.FormatStorageTime(start),
 			timeutil.FormatStorageTime(end),
-			watermark,
-		).
+		)
+	} else {
+		query = query.Where(
+			"((timestamp >= ? AND timestamp < ?) OR (id = ? AND event_key = ?))",
+			timeutil.FormatStorageTime(start),
+			timeutil.FormatStorageTime(end),
+			trigger.EventID,
+			trigger.EventKey,
+		)
+	}
+	err := query.
 		Group(strings.Join(groupDimensions, ", ")).
 		Scan(&rows).Error
 	if err != nil {
@@ -179,8 +211,38 @@ func InsertQuotaObservationIfDue(
 			Take(&latest).Error
 		switch {
 		case err == nil:
-			if !quotaObservationResetChanged(latest, observation) {
-				if !observation.ObservedAt.After(latest.ObservedAt) || observation.ObservedAt.Sub(latest.ObservedAt) < minimumSpacing {
+			outOfOrderHeader := observation.Source == "usage_header" &&
+				observation.ObservedAt.Before(latest.ObservedAt)
+			if outOfOrderHeader {
+				var replay entities.QuotaObservation
+				replayQuery := tx.
+					Model(&entities.QuotaObservation{}).
+					Select("id").
+					Where(
+						"usage_identity_id = ? AND window_kind_id = ? AND observed_at = ? AND source = ?",
+						observation.UsageIdentityID,
+						observation.WindowKindID,
+						timeutil.FormatStorageTime(observation.ObservedAt),
+						observation.Source,
+					)
+				if observation.TriggeringEventKey == nil {
+					replayQuery = replayQuery.Where("triggering_event_key IS NULL")
+				} else {
+					replayQuery = replayQuery.Where("triggering_event_key = ?", *observation.TriggeringEventKey)
+				}
+				err := replayQuery.Take(&replay).Error
+				switch {
+				case err == nil:
+					result = QuotaObservationSkipped
+					return nil
+				case errors.Is(err, gorm.ErrRecordNotFound):
+				default:
+					return fmt.Errorf("check out-of-order quota observation replay: %w", err)
+				}
+			}
+			if !outOfOrderHeader && !quotaObservationResetChanged(latest, observation) {
+				if !observation.ObservedAt.After(latest.ObservedAt) ||
+					observation.ObservedAt.Sub(latest.ObservedAt) < minimumSpacing {
 					result = QuotaObservationSkipped
 					return nil
 				}
