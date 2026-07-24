@@ -42,6 +42,21 @@ describe('i18n resources', () => {
     expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_auth_files_display_mode_health')).toBe('健康');
   });
 
+  it('localizes confidence-aware credential capacity copy in every language', () => {
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_capacity_recent_mix')).toBe('At your recent usage mix');
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_confidence_medium')).toBe('Medium confidence');
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_history_hint')).toBe('History still building');
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_flag_pricing_changed_segment')).toContain('pricing segment');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_capacity_recent_mix')).toBe('按该凭证近期用量构成估算');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_confidence_medium')).toBe('中等置信度');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_history_hint')).toBe('历史数据仍在积累');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_flag_pricing_changed_segment')).toContain('价格一致的一个区间');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_capacity_recent_mix')).toBe('依此憑證近期用量組成估算');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_confidence_medium')).toBe('中等可信度');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_history_hint')).toBe('歷史資料仍在累積');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_flag_pricing_changed_segment')).toContain('價格一致的一個區段');
+  });
+
   it('keeps credential table column headers available in every language', () => {
     expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_column_name')).toBe('Name');
     expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_column_quota')).toBe('Quota');

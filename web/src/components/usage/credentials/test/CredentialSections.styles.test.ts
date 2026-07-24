@@ -404,4 +404,16 @@ describe('Credential section styles', () => {
     expect(credentialStyles).toMatch(/\[data-theme='dark'\][\s\S]*\.credentialPlanBadgePro[\s\S]*?color:\s*#fde68a;/)
     expect(credentialStyles).toMatch(/\[data-theme='dark'\][\s\S]*\.credentialRemainingDaysBadge[\s\S]*?color:\s*#bbf7d0;/)
   })
+
+  it('wraps capacity context and keeps flag details keyboard accessible at quota-bar widths', () => {
+    expect(cssBlock('.credentialQuotaCapacitySummary')).toContain('min-width: 0;')
+    expect(cssBlock('.credentialQuotaCapacityContext')).toContain('flex-wrap: wrap;')
+    expect(cssBlock('.credentialQuotaCapacityMixLabel')).toContain('overflow-wrap: anywhere;')
+    expect(cssBlock('.credentialQuotaCapacityMixLabel')).toContain('white-space: normal !important;')
+    expect(cssBlock('.credentialQuotaConfidenceBadgeMedium')).toContain('#d97706')
+    expect(cssBlock('.credentialQuotaConfidenceBadgeHigh')).toContain('var(--text-secondary)')
+    expect(cssBlock('.credentialQuotaCapacityFlagTarget')).toMatch(/&:focus-visible\s*\{[\s\S]*?outline:/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaCapacityFlagTarget:focus-visible \.credentialQuotaCapacityFlagTooltip\s*\{[\s\S]*?opacity:\s*1;/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaBarBlock:nth-child\(even\) \.credentialQuotaCapacityFlagTooltip\s*\{[\s\S]*?right:\s*0;/)
+  })
 })

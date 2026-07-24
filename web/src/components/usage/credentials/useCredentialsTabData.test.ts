@@ -45,15 +45,16 @@ describe('useQuotaCache interval lifecycle', () => {
 })
 
 describe('Credentials quota inspection cache refresh', () => {
-  it('refreshes identities and quota cache together for manual page refresh', () => {
+  it('refreshes identities, quota cache, and active capacity data together for manual page refresh', () => {
     expect(credentialsTabDataSource).toContain('const refreshCredentialPages = credentialPages.refresh')
-    expect(credentialsTabDataSource).toMatch(/const\s+refresh\s*=\s*useCallback\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*refreshCredentialPages\(\)[\s\S]*refreshQuotaCache\(\)[\s\S]*\}/)
+    expect(credentialsTabDataSource).toMatch(/const\s+refreshQuotaData\s*=\s*useCallback\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*refreshQuotaCache\(\)[\s\S]*refreshQuotaCapacity\(\)[\s\S]*\}/)
+    expect(credentialsTabDataSource).toMatch(/const\s+refresh\s*=\s*useCallback\(\s*async\s*\(\)\s*=>\s*\{[\s\S]*refreshCredentialPages\(\)[\s\S]*refreshQuotaData\(\)[\s\S]*\}/)
     expect(credentialsTabDataSource).toMatch(/refresh:\s*refresh,/)
   })
 
-  it('refreshes the current Auth Files quota cache when inspection completes', () => {
-    expect(credentialsTabDataSource).toContain('refreshQuotaCache')
-    expect(credentialsTabDataSource).toMatch(/useQuotaInspection\(\{[\s\S]*?onInspectionCompleted:\s*refreshQuotaCache[\s\S]*?\}\)/)
+  it('refreshes the current quota and capacity data when inspection completes', () => {
+    expect(credentialsTabDataSource).toContain('refreshQuotaData')
+    expect(credentialsTabDataSource).toMatch(/useQuotaInspection\(\{[\s\S]*?onInspectionCompleted:\s*refreshQuotaData[\s\S]*?\}\)/)
   })
 
   it('lets completed cache quota clear stale row refresh failures after inspection', () => {

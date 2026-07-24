@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, deleteAuthFiles, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, startUsageQuotaInspection, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
+import { ApiError, appPath, createUsageEventRequestLogDownloadURL, deleteAuthFiles, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchCpaApiKeySettings, fetchKeyActivity, fetchKeyOverview, fetchKeyOverviewRealtime, fetchQuotaAutoRefreshSettings, fetchUsageActivity, fetchUsageOverview, fetchUsageOverviewRealtime, fetchUsageQuotaCache, fetchUsageQuotaCapacity, fetchUsageQuotaInspectionStatus, fetchUsageQuotaResetCredits, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentities, fetchUsageIdentitiesPage, fetchUsageQuotaRefreshTask, fetchVersion, loginWithCPAAPIKey, logout, refreshUsageQuotas, resetUsageQuota, revokeAuthSession, setAuthFilesDisabled, startUsageQuotaInspection, updateCpaApiKeyAlias, updateQuotaAutoRefreshSettings } from '../api';
 
 const headerValue = (init: RequestInit | undefined, name: string): string | null => new Headers(init?.headers).get(name);
 
@@ -766,6 +766,29 @@ describe('fetchUsageEvents', () => {
     expect(init).toMatchObject({ credentials: 'include', method: 'POST', signal });
     expect(headerValue(init, 'Content-Type')).toBe('application/json');
     expect(init?.body).toBe(JSON.stringify({ auth_indexes: ['auth-1'] }));
+  });
+
+  it('loads capacity estimates for the current page in one batch', async () => {
+    vi.stubGlobal('window', { __APP_BASE_PATH__: undefined });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [{ auth_index: 'auth-1', windows: [] }, { auth_index: 'auth-2', windows: [] }],
+      }),
+    } as Response);
+    const signal = new AbortController().signal;
+
+    const response = await fetchUsageQuotaCapacity(['auth-1', 'auth-2'], signal);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url), 'http://localhost');
+
+    expect(response.items.map((item) => item.auth_index)).toEqual(['auth-1', 'auth-2']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(parsed.pathname).toBe('/api/v1/quota/capacity');
+    expect(init).toMatchObject({ credentials: 'include', method: 'POST', signal, cache: 'no-store' });
+    expect(headerValue(init, 'Content-Type')).toBe('application/json');
+    expect(init?.body).toBe(JSON.stringify({ auth_indexes: ['auth-1', 'auth-2'] }));
   });
 
   it('creates quota refresh tasks for current page auth indexes', async () => {
