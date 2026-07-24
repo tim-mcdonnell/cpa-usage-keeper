@@ -3,11 +3,11 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner'
 import { Modal } from '@/components/ui/Modal'
-import { IconChartLine, IconGaugeReset, IconRefreshCw, IconSearch, IconSettings, IconShield, IconTrash2 } from '@/components/ui/icons'
+import { IconChartLine, IconGaugeReset, IconInfo, IconRefreshCw, IconSearch, IconSettings, IconShield, IconTrash2 } from '@/components/ui/icons'
 import quotaCostIcon from '@/assets/icons/quota-cost.svg'
 import quotaTokenIcon from '@/assets/icons/quota-token.svg'
 import styles from './CredentialSections.module.scss'
-import type { AuthFileCredentialRow, DisplayQuota, PlanTypeTone } from './credentialViewModels'
+import type { AuthFileCredentialRow, DisplayQuota, PlanTypeTone, QuotaCapacityFlag, QuotaUsageMode, QuotaWindowUsageDisplay } from './credentialViewModels'
 import { deleteAuthFiles, fetchQuotaAutoRefreshSettings, fetchUsageQuotaResetCredits, setAuthFilesDisabled, updateQuotaAutoRefreshSettings, type UsageIdentityPageSort } from '@/lib/api'
 import type { QuotaAutoRefreshScheduleUnit, QuotaAutoRefreshSettings, UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse, UsageQuotaResetCreditsResponse } from '@/lib/types'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
@@ -20,7 +20,6 @@ type InspectionIndicatorTone = 'idle' | 'running' | 'completed'
 type InspectionResultStatusFilter = 'normal' | 'limit_reached' | 'unauthorized_401_402' | 'other_failed'
 type InspectionResultStatusFilterState = InspectionResultStatusFilter | null
 type InspectionStatTone = 'normal' | 'limitReached' | 'unauthorized' | 'failed' | 'unknown'
-type QuotaUsageMode = 'current' | 'estimated'
 type AuthFileDisplayMode = 'quota' | 'health'
 type InvalidInspectionAccountAction = 'disable' | 'delete'
 type QuotaErrorDisplay = {
@@ -109,12 +108,15 @@ interface AuthFileCredentialsSectionProps {
   onRefreshInspectionStatus: () => Promise<void>
   onStartInspection: () => Promise<void>
   onAfterInvalidAccountAction?: () => Promise<void>
+  quotaUsageMode?: QuotaUsageMode
+  onQuotaUsageModeChange?: (mode: QuotaUsageMode) => void
 }
 
-export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onResetQuotaForAuthIndex, aliasSavingId, onSaveAlias, onRefreshInspectionStatus, onStartInspection, onAfterInvalidAccountAction }: AuthFileCredentialsSectionProps) {
+export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onResetQuotaForAuthIndex, aliasSavingId, onSaveAlias, onRefreshInspectionStatus, onStartInspection, onAfterInvalidAccountAction, quotaUsageMode: controlledQuotaUsageMode, onQuotaUsageModeChange }: AuthFileCredentialsSectionProps) {
   const { t } = useTranslation()
   const [inspectionOpen, setInspectionOpen] = useState(false)
-  const [quotaUsageMode, setQuotaUsageMode] = useState<QuotaUsageMode>('current')
+  const [localQuotaUsageMode, setLocalQuotaUsageMode] = useState<QuotaUsageMode>('current')
+  const quotaUsageMode = controlledQuotaUsageMode ?? localQuotaUsageMode
   const [displayMode, setDisplayModeState] = useState<AuthFileDisplayMode>(() => readStoredAuthFileDisplayMode())
   const [expiryTooltip, setExpiryTooltip] = useState<CredentialExpiryTooltipState | null>(null)
   const expiryTooltipHoverTargetRef = useRef<CredentialExpiryTooltipTarget | null>(null)
@@ -122,6 +124,12 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
   const showHealthMode = displayMode === 'health'
   const canRefresh = rows.some((row) => !isRowRefreshing(row) && !row.identity.is_deleted) && !quotaRefreshing
   const inspectionTone = inspectionIndicatorTone(quotaInspectionStatus)
+  const setQuotaUsageMode = (mode: QuotaUsageMode) => {
+    if (controlledQuotaUsageMode === undefined) {
+      setLocalQuotaUsageMode(mode)
+    }
+    onQuotaUsageModeChange?.(mode)
+  }
   const openInspection = () => {
     setInspectionOpen(true)
     void onRefreshInspectionStatus()
@@ -1836,6 +1844,11 @@ export function formatQuotaResetDuration(resetAt: string): string {
 }
 
 export function formatQuotaWindowUsageAriaLabel(t: Translate, windowUsage: NonNullable<DisplayQuota['windowUsage']>): string {
+  if (!windowUsage.cost) {
+    return t('usage_stats.credentials_quota_window_tokens_aria', {
+      tokens: windowUsage.tokens,
+    })
+  }
   return t('usage_stats.credentials_quota_window_usage_aria', {
     tokens: windowUsage.tokens,
     cost: windowUsage.cost,
@@ -1853,6 +1866,7 @@ export function formatQuotaBillingUsageAriaLabel(t: Translate, billingUsage: Non
 function QuotaBar({ quota, quotaUsageMode }: { quota: DisplayQuota; quotaUsageMode: QuotaUsageMode }) {
   const { t } = useTranslation()
   const groupTooltipId = useId()
+  const capacityTooltipId = useId()
   // 条宽使用剩余额度百分比，颜色跟随剩余风险状态从绿到黄到红。
   const percent = quota.barPercent ?? 0
   const width = `${Math.max(0, Math.min(100, percent))}%`
@@ -1861,6 +1875,10 @@ function QuotaBar({ quota, quotaUsageMode }: { quota: DisplayQuota; quotaUsageMo
   const resetDuration = quota.resetText ? formatQuotaResetDuration(quota.resetText) : ''
   const billingUsage = quota.billingUsage
   const windowUsage = billingUsage ? undefined : quotaWindowUsageForMode(quota, quotaUsageMode)
+  const showingCapacity = quotaUsageMode === 'estimated'
+    && windowUsage === quota.windowUsageEstimate
+    && Boolean(windowUsage?.capacitySource)
+  const capacityTooltip = showingCapacity && windowUsage ? quotaCapacityTooltip(t, windowUsage) : ''
   const hasGroupDescription = Boolean(quota.groupDescription?.trim())
 
   return (
@@ -1903,16 +1921,54 @@ function QuotaBar({ quota, quotaUsageMode }: { quota: DisplayQuota; quotaUsageMo
           </strong>
         )}
         {windowUsage && (
-          <strong className={styles.credentialQuotaWindowUsage} aria-label={formatQuotaWindowUsageAriaLabel(t, windowUsage)}>
-            <span className={styles.credentialQuotaUsageMetric}>
-              <img src={quotaTokenIcon} alt="" aria-hidden="true" />
-              <span>{windowUsage.tokens}</span>
-            </span>
-            <span className={styles.credentialQuotaUsageMetric}>
-              <img src={quotaCostIcon} alt="" aria-hidden="true" />
-              <span>{windowUsage.cost}</span>
-            </span>
-          </strong>
+          <span className={styles.credentialQuotaCapacitySummary}>
+            <strong className={styles.credentialQuotaWindowUsage} aria-label={formatQuotaWindowUsageAriaLabel(t, windowUsage)}>
+              <span className={styles.credentialQuotaUsageMetric}>
+                <img src={quotaTokenIcon} alt="" aria-hidden="true" />
+                <span>{windowUsage.tokens}</span>
+              </span>
+              {windowUsage.cost && (
+                <span className={styles.credentialQuotaUsageMetric}>
+                  <img src={quotaCostIcon} alt="" aria-hidden="true" />
+                  <span>{windowUsage.cost}</span>
+                </span>
+              )}
+            </strong>
+            {showingCapacity && (
+              <span className={styles.credentialQuotaCapacityContext}>
+                <span className={styles.credentialQuotaCapacityMixLabel}>
+                  {t('usage_stats.credentials_quota_capacity_recent_mix')}
+                </span>
+                {windowUsage.confidence && (
+                  <span
+                    className={`${styles.credentialQuotaConfidenceBadge} ${styles[`credentialQuotaConfidenceBadge${capitalize(windowUsage.confidence)}`]}`.trim()}
+                    data-confidence={windowUsage.confidence}
+                  >
+                    {t(`usage_stats.credentials_quota_confidence_${windowUsage.confidence}`)}
+                  </span>
+                )}
+                {windowUsage.historyHint && (
+                  <span className={styles.credentialQuotaHistoryHint}>
+                    {t('usage_stats.credentials_quota_history_hint')}
+                  </span>
+                )}
+                {capacityTooltip && (
+                  <span
+                    className={styles.credentialQuotaCapacityFlagTarget}
+                    data-capacity-flags=""
+                    tabIndex={0}
+                    aria-label={t('usage_stats.credentials_quota_capacity_flags_aria')}
+                    aria-describedby={capacityTooltipId}
+                  >
+                    <IconInfo size={11} />
+                    <span id={capacityTooltipId} className={styles.credentialQuotaCapacityFlagTooltip} role="tooltip">
+                      {capacityTooltip}
+                    </span>
+                  </span>
+                )}
+              </span>
+            )}
+          </span>
         )}
         {resetLabel && <span className={styles.credentialQuotaResetTime}>{resetLabel}</span>}
       </div>
@@ -1932,4 +1988,27 @@ function quotaWindowUsageForMode(quota: DisplayQuota, mode: QuotaUsageMode): Dis
     return quota.windowUsageEstimate
   }
   return quota.windowUsage
+}
+
+function quotaCapacityTooltip(t: Translate, windowUsage: QuotaWindowUsageDisplay): string {
+  const messages: string[] = []
+  if (windowUsage.costCapacity === 'segment_scoped') {
+    messages.push(t('usage_stats.credentials_quota_flag_pricing_changed_segment'))
+  } else if (windowUsage.costCapacity === 'suppressed' && windowUsage.flags?.includes('pricing_changed')) {
+    messages.push(t('usage_stats.credentials_quota_flag_pricing_changed_suppressed'))
+  }
+  for (const flag of windowUsage.flags ?? []) {
+    if (flag === 'pricing_changed') {
+      if (windowUsage.costCapacity === undefined) {
+        messages.push(t('usage_stats.credentials_quota_flag_pricing_changed'))
+      }
+      continue
+    }
+    messages.push(t(quotaCapacityFlagTranslationKey(flag)))
+  }
+  return messages.join(' ')
+}
+
+function quotaCapacityFlagTranslationKey(flag: Exclude<QuotaCapacityFlag, 'pricing_changed'>): string {
+  return `usage_stats.credentials_quota_flag_${flag}`
 }

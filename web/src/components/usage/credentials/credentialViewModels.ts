@@ -1,4 +1,4 @@
-import type { UsageCredentialHealth, UsageIdentity, UsageQuotaCheckResponse, UsageQuotaRow } from '@/lib/types'
+import type { UsageCredentialHealth, UsageIdentity, UsageQuotaCapacityItem, UsageQuotaCapacityWindow, UsageQuotaCheckResponse, UsageQuotaRow, UsageQuotaWindowEstimate } from '@/lib/types'
 import { calculateCacheReadRate, formatCompactTokenValue } from '@/utils/usage'
 
 export const CREDENTIALS_PAGE_SIZE = 10
@@ -9,10 +9,26 @@ const AVERAGE_MONTH_WINDOW_SECONDS = 365 * 24 * 60 * 60 / 12
 
 type QuotaStatus = 'ok' | 'warning' | 'danger' | 'unknown'
 export type PlanTypeTone = 'free' | 'team' | 'plus' | 'pro' | 'neutral'
+export type QuotaUsageMode = 'current' | 'estimated'
+export type QuotaCapacityConfidence = 'high' | 'medium'
+export type QuotaCapacityFlag =
+  | 'pricing_changed'
+  | 'unpriced_models'
+  | 'coverage_gap'
+  | 'mix_shift'
+  | 'reset_ambiguous'
+  | 'identity_changed'
+  | 'identity_unverified'
+  | 'stale'
 
 export interface QuotaWindowUsageDisplay {
   tokens: string
-  cost: string
+  cost?: string
+  capacitySource?: 'regression' | 'history'
+  confidence?: QuotaCapacityConfidence
+  historyHint?: boolean
+  flags?: QuotaCapacityFlag[]
+  costCapacity?: 'suppressed' | 'segment_scoped'
 }
 
 export interface QuotaBillingUsageDisplay {
@@ -139,12 +155,16 @@ export function buildAuthFileCredentialRows(
   identities: UsageIdentity[],
   quotas: Map<string, UsageQuotaCheckResponse> = new Map(),
   quotaStates: Map<string, Pick<AuthFileCredentialRow, 'quotaLoading' | 'quotaError' | 'refreshStatus' | 'quotaResetting'>> = new Map(),
+  capacities: Map<string, UsageQuotaCapacityItem> = new Map(),
 ): AuthFileCredentialRow[] {
   return identities.map((identity) => {
     const quotaResponse = quotas.get(identity.identity)
     const quota = quotaResponse?.quota ?? []
     const state = quotaStates.get(identity.identity)
-    const displayQuotas = quota.map(toDisplayQuota).filter(isDisplayableQuota)
+    const capacity = capacities.get(identity.identity)
+    const displayQuotas = quota
+      .map((row) => toDisplayQuota(row, capacityWindowForQuota(identity, row, capacity)))
+      .filter(isDisplayableQuota)
     const planType = firstNonEmpty(...quota.map((row) => row.planType), identity.plan_type)
 
     return {
@@ -198,7 +218,7 @@ export function buildAiProviderCredentialRows(identities: UsageIdentity[]): AiPr
   }))
 }
 
-function toDisplayQuota(row: UsageQuotaRow): DisplayQuota | undefined {
+function toDisplayQuota(row: UsageQuotaRow, capacityWindow?: UsageQuotaCapacityWindow): DisplayQuota | undefined {
   // 后端 quota row 可能是 used、remaining 或 remainingFraction，这里统一成展示进度。
   const used = finiteNumber(row.used)
   const limit = finiteNumber(row.limit)
@@ -227,7 +247,7 @@ function toDisplayQuota(row: UsageQuotaRow): DisplayQuota | undefined {
     resetText: row.resetAt,
     windowSeconds,
     windowUsage: quotaWindowUsage(row),
-    windowUsageEstimate: quotaWindowUsageEstimate(row, percentDisplay),
+    windowUsageEstimate: quotaWindowUsageEstimate(row, percentDisplay, capacityWindow?.current_epoch),
     billingUsage: quotaBillingUsage(row),
     status: quotaStatus(row, percentDisplay.percent, percentDisplay.kind),
   }
@@ -266,7 +286,43 @@ function quotaWindowUsage(row: UsageQuotaRow): QuotaWindowUsageDisplay | undefin
   }
 }
 
-function quotaWindowUsageEstimate(row: UsageQuotaRow, percentDisplay: { percent: number | null; kind: DisplayQuota['percentKind'] }): QuotaWindowUsageDisplay | undefined {
+function quotaWindowUsageEstimate(
+  row: UsageQuotaRow,
+  percentDisplay: { percent: number | null; kind: DisplayQuota['percentKind'] },
+  capacityEstimate?: UsageQuotaWindowEstimate | null,
+): QuotaWindowUsageDisplay | undefined {
+  const onePointEstimate = onePointQuotaWindowUsageEstimate(row, percentDisplay)
+  if (!capacityEstimate) {
+    return onePointEstimate
+  }
+  if (capacityEstimate.confidence === 'low') {
+    return onePointEstimate ? { ...onePointEstimate, capacitySource: 'history', historyHint: true } : undefined
+  }
+  if (capacityEstimate.confidence === 'insufficient') {
+    return onePointEstimate
+  }
+
+  const tokensAt100 = finiteNumber(capacityEstimate.tokens_at_100 ?? undefined)
+  if (tokensAt100 === undefined) {
+    return onePointEstimate
+  }
+  const costAt100 = finiteNumber(capacityEstimate.cost_at_100 ?? undefined)
+  const costCapacity = capacityEstimate.cost_segment
+    ? 'segment_scoped'
+    : costAt100 === undefined
+      ? 'suppressed'
+      : undefined
+  return {
+    tokens: formatCompactTokenValue(tokensAt100),
+    ...(costAt100 === undefined ? {} : { cost: formatQuotaWindowCost(costAt100) }),
+    capacitySource: 'regression',
+    confidence: capacityEstimate.confidence,
+    flags: [...capacityEstimate.flags],
+    ...(costCapacity ? { costCapacity } : {}),
+  }
+}
+
+function onePointQuotaWindowUsageEstimate(row: UsageQuotaRow, percentDisplay: { percent: number | null; kind: DisplayQuota['percentKind'] }): QuotaWindowUsageDisplay | undefined {
   // 估算只在已用百分比可外推时生效；0%、满额或免费窗口都继续展示当前值。
   const tokens = finiteNumber(row.window_usage_tokens)
   const cost = finiteNumber(row.window_usage_cost)
@@ -282,6 +338,52 @@ function quotaWindowUsageEstimate(row: UsageQuotaRow, percentDisplay: { percent:
     tokens: formatCompactTokenValue(tokens / ratio),
     cost: formatQuotaWindowCost(cost / ratio),
   }
+}
+
+function capacityWindowForQuota(
+  identity: UsageIdentity,
+  row: UsageQuotaRow,
+  capacity?: UsageQuotaCapacityItem,
+): UsageQuotaCapacityWindow | undefined {
+  const windowKindID = estimableWindowKindID(identity, row)
+  if (!windowKindID) {
+    return undefined
+  }
+  return capacity?.windows.find((window) => window.window_kind_id === windowKindID)
+}
+
+function estimableWindowKindID(identity: UsageIdentity, row: UsageQuotaRow): string | undefined {
+  const provider = quotaCapacityProvider(identity)
+  const windowSeconds = finiteNumber(row.window?.seconds)
+  if (windowSeconds !== FIVE_HOUR_WINDOW_SECONDS && windowSeconds !== WEEKLY_WINDOW_SECONDS) {
+    return undefined
+  }
+  if (provider === 'claude') {
+    if (row.key === 'five_hour' && windowSeconds === FIVE_HOUR_WINDOW_SECONDS) {
+      return 'claude/overall/five_hour/18000'
+    }
+    if (row.key === 'seven_day' && windowSeconds === WEEKLY_WINDOW_SECONDS) {
+      return 'claude/overall/seven_day/604800'
+    }
+    return undefined
+  }
+  if (provider === 'codex' && /^rate_limit\.(primary|secondary)_window$/.test(row.key)) {
+    return `codex/overall/rate_limit/${windowSeconds}`
+  }
+  return undefined
+}
+
+function quotaCapacityProvider(identity: UsageIdentity): 'claude' | 'codex' | undefined {
+  const values = [identity.type, identity.provider]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => Boolean(value))
+  if (values.some((value) => value === 'claude' || value === 'anthropic')) {
+    return 'claude'
+  }
+  if (values.some((value) => value === 'codex')) {
+    return 'codex'
+  }
+  return undefined
 }
 
 function formatQuotaWindowCost(cost: number): string {

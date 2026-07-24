@@ -5,9 +5,11 @@ import {
   selectQuotaEligibleAuthIndexes,
   type AiProviderCredentialRow,
   type AuthFileCredentialRow,
+  type QuotaUsageMode,
 } from './credentialViewModels'
 import { useCredentialPages } from './useCredentialPages'
 import { useQuotaCache } from './useQuotaCache'
+import { useQuotaCapacity } from './useQuotaCapacity'
 import { useQuotaInspection } from './useQuotaInspection'
 import { ApiError, resetUsageQuota, updateUsageIdentityAlias, type UsageIdentityPageSort } from '@/lib/api'
 import i18n from '@/i18n'
@@ -59,6 +61,8 @@ export interface CredentialsTabData {
   error: string
   quotaRefreshing: boolean
   quotaRefreshError: string
+  quotaUsageMode: QuotaUsageMode
+  setQuotaUsageMode: (mode: QuotaUsageMode) => void
   quotaInspectionStatus: UsageQuotaInspectionStatusResponse | null
   quotaInspectionLoading: boolean
   quotaInspectionStarting: boolean
@@ -74,6 +78,7 @@ export interface CredentialsTabData {
 }
 
 export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, onAuthRequired, onNotice }: UseCredentialsTabDataOptions): CredentialsTabData {
+  const [quotaUsageMode, setQuotaUsageMode] = useState<QuotaUsageMode>('current')
   const credentialPages = useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAuthRequired })
   const currentAuthIndexes = useMemo(
     () => selectQuotaEligibleAuthIndexes(credentialPages.authFileIdentities),
@@ -81,6 +86,14 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
   )
   const { quotaResponseByAuthIndex, cachedQuotaStateByAuthIndex, setQuotaResponseByAuthIndex, refreshQuotaCache } = useQuotaCache({
     enabled: enabledAuthFiles,
+    authIndexes: currentAuthIndexes,
+    onAuthRequired,
+  })
+  const {
+    capacityByAuthIndex: quotaCapacityByAuthIndex,
+    refreshQuotaCapacity,
+  } = useQuotaCapacity({
+    enabled: enabledAuthFiles && quotaUsageMode === 'estimated',
     authIndexes: currentAuthIndexes,
     onAuthRequired,
   })
@@ -93,21 +106,28 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
   const { refreshQuotaForAuthIndex } = quotaRefreshTasks
   const [quotaResetStateByAuthIndex, setQuotaResetStateByAuthIndex] = useState<Record<string, CredentialResetState>>({})
   const [aliasSavingId, setAliasSavingId] = useState('')
+  const refreshQuotaData = useCallback(async () => {
+    await Promise.all([refreshQuotaCache(), refreshQuotaCapacity()])
+  }, [refreshQuotaCache, refreshQuotaCapacity])
   const quotaInspection = useQuotaInspection({
     enabled: enabledAuthFiles,
     onAuthRequired,
-    onInspectionCompleted: refreshQuotaCache,
+    onInspectionCompleted: refreshQuotaData,
   })
 
   const quotaResponsesByAuthIndex = useMemo(() => new Map(Object.entries(quotaResponseByAuthIndex)), [quotaResponseByAuthIndex])
+  const quotaCapacitiesByAuthIndex = useMemo(
+    () => new Map(Object.entries(quotaCapacityByAuthIndex)),
+    [quotaCapacityByAuthIndex],
+  )
   const quotaStates = useMemo(
     () => buildCredentialQuotaStateMap(cachedQuotaStateByAuthIndex, quotaRefreshTasks.quotaStateByAuthIndex, quotaResponseByAuthIndex, quotaResetStateByAuthIndex),
     [cachedQuotaStateByAuthIndex, quotaRefreshTasks.quotaStateByAuthIndex, quotaResponseByAuthIndex, quotaResetStateByAuthIndex],
   )
 
   const authFileRows = useMemo(
-    () => buildAuthFileCredentialRows(credentialPages.authFileIdentities, quotaResponsesByAuthIndex, quotaStates),
-    [credentialPages.authFileIdentities, quotaResponsesByAuthIndex, quotaStates],
+    () => buildAuthFileCredentialRows(credentialPages.authFileIdentities, quotaResponsesByAuthIndex, quotaStates, quotaCapacitiesByAuthIndex),
+    [credentialPages.authFileIdentities, quotaCapacitiesByAuthIndex, quotaResponsesByAuthIndex, quotaStates],
   )
   const aiProviderRows = useMemo(
     () => buildAiProviderCredentialRows(credentialPages.aiProviderIdentities),
@@ -115,8 +135,8 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
   )
   const refreshCredentialPages = credentialPages.refresh
   const refresh = useCallback(async () => {
-    await Promise.all([refreshCredentialPages(), refreshQuotaCache()])
-  }, [refreshCredentialPages, refreshQuotaCache])
+    await Promise.all([refreshCredentialPages(), refreshQuotaData()])
+  }, [refreshCredentialPages, refreshQuotaData])
 
   const saveUsageIdentityAlias = useCallback(async (id: string, alias: string) => {
     setAliasSavingId(id)
@@ -194,6 +214,8 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
     error: credentialPages.error,
     quotaRefreshing: quotaRefreshTasks.quotaRefreshing,
     quotaRefreshError: quotaRefreshTasks.quotaRefreshError,
+    quotaUsageMode,
+    setQuotaUsageMode,
     quotaInspectionStatus: quotaInspection.quotaInspectionStatus,
     quotaInspectionLoading: quotaInspection.quotaInspectionLoading,
     quotaInspectionStarting: quotaInspection.quotaInspectionStarting,
