@@ -12,12 +12,23 @@ Estimator behavior remains behind `estimate.Estimator`, with no API or database 
 
 ## Evidence search and privacy boundary
 
-The checkout contains no `data/app.db`.
-No `app.db`, SQLite file, CPA Usage Keeper environment file, running CPA Usage Keeper container, or CPA Usage Keeper Docker volume was found in the accessible checkout, sibling Orca paths, standard user application-data paths, or the searched user-directory depth.
+The evidence search is exhaustive only within the bounded sources below.
+It does not claim access to an unlisted machine, deployment, backup, private artifact store, or deleted GitHub artifact.
+
+The protocol is:
+
+1. Check the repository-default `data/app.db`, then enumerate `app.db`, `*.sqlite`, and `*.sqlite3` candidates under `/Users/tmcdonne/orca` to depth 6 and `app.db` under `/Users/tmcdonne` to depth 4.
+2. Enumerate CPA Usage Keeper containers and Docker volumes without starting, mounting, or changing them.
+3. Search tracked files and every reachable Git object path for database files, quota-observation exports, and production-derived aggregate reports, then distinguish explicitly synthetic fixtures from accrued evidence.
+4. Paginate the fork's GitHub releases, release assets, and retained GitHub Actions artifacts.
+5. Record the search time, roots, depth, candidate counts, inaccessible scopes, and artifact counts so a later run can identify evidence that became available.
+6. Treat a database as relevant only after opening it read-only and confirming the `quota_observations` table, and share only the aggregate analyzer output.
+
+The 2026-07-24 run found no `data/app.db`, no readable relevant database, no running CPA Usage Keeper container, and no CPA Usage Keeper Docker volume in those scopes.
 The repository and all reachable Git objects contain one quota-estimator corpus, `internal/quota/estimate/testdata/synthetic_capacity.golden.json`, and it is explicitly synthetic.
-The fork has zero GitHub releases and zero retained GitHub Actions artifacts.
+The fork had zero GitHub releases and zero retained GitHub Actions artifacts at the search time.
 The available repository tags and workflow definitions contain source and binary packaging behavior, but no production-derived quota-observation aggregates.
-The search therefore found zero accessible accrued-history databases and zero legitimate production-derived aggregate datasets.
+The search therefore established zero accessible accrued-history databases and zero legitimate production-derived aggregate datasets within its recorded bounds.
 This is not evidence that a deployment has zero quota-observation rows, because no deployment database was available to count.
 No credential identifiers, account identifiers, event records, prompts, responses, tokens, or raw provider payloads were copied into the repository.
 
@@ -76,12 +87,16 @@ No existing confidence, reset, outlier, mix-shift, staleness, bootstrap, or cont
 Changing those constants without accrued history would invent empirical support that this checkout does not have.
 The new residual thresholds are conservative structural guardrails required to implement the refinement, not claimed production tuning.
 They combine a minimum absolute movement, detected provider resolution, and robust clean-series noise so ordinary quantization or model noise does not become a bypass claim.
-The real-history threshold-tuning acceptance criterion remains unproven until the analyzer is run against genuinely accrued observations and the resulting aggregate evidence is reviewed.
+Production threshold tuning is explicitly deferred until the analyzer is run against genuinely accrued observations and the resulting aggregate evidence is reviewed.
+This slice does not claim production validation.
 
 ## Retention decision
 
 No quota-observation deletion is implemented in this slice.
 With no accessible production database, there is no measured row volume, database size, age distribution, credential count, window count, or recording rate that could justify irreversible thinning.
 Observation rows continue to be append-only and remain covered by the existing database backup behavior.
-Retention must be reconsidered after at least 30 active recording days are available and whenever the aggregate analyzer reports either 1,000,000 quota-observation rows, 1 GiB of database allocation, or more than 365 days of history.
+Run the first measured retention review when the analyzer reports 30 active recording days.
+After that review, rerun it monthly and after any material change to observation frequency or credential count.
+Open a retention implementation decision immediately when the analyzer reports at least 1,000,000 quota-observation rows, at least 1 GiB of database allocation, or more than 365 days of history.
+These are review triggers, not claims about current production volume.
 Any future implementation must remain repository-bounded, delete-only, deterministic, backup-compatible, and prove that retained recent-data estimates are byte-for-byte unchanged before and after thinning.
