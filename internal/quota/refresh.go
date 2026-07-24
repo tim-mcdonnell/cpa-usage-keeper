@@ -382,7 +382,7 @@ func (s *Service) runRefreshTaskWithWorker(authIndex string) {
 	}()
 
 	// 把任务从 queued 切到 running，并拿到锁内确认后的 auth_index。
-	authIndex, ok := s.markRefreshTaskRunning(authIndex)
+	authIndex, source, ok := s.markRefreshTaskRunning(authIndex)
 	// 如果任务不存在或状态已经不是 queued，说明它被清理或状态异常，直接结束 goroutine。
 	if !ok {
 		// 不再调用 provider，避免无任务记录时产生不可见结果。
@@ -393,7 +393,7 @@ func (s *Service) runRefreshTaskWithWorker(authIndex string) {
 	// 任务结束时释放 timeout timer，避免资源泄漏。
 	defer cancel()
 	// Check 会按 auth_index 读取身份、调用对应 provider，并标准化 quota rows。
-	response, err := s.Check(ctx, CheckRequest{AuthIndex: authIndex})
+	snapshot, err := s.checkWithSnapshot(ctx, CheckRequest{AuthIndex: authIndex})
 	// provider 或身份校验失败时进入失败状态。
 	if err != nil {
 		if errors.Is(err, ErrUnsupportedType) {
@@ -407,9 +407,11 @@ func (s *Service) runRefreshTaskWithWorker(authIndex string) {
 		return
 	}
 	// provider 成功后立即把窗口内 token/cost 补进同一次缓存，前端读取缓存时不再触发额外统计请求。
-	response = s.attachWindowUsageStats(ctx, authIndex, response, time.Now())
+	reading := newQuotaReading(snapshot.identity, snapshot.provider, source, snapshot.observedAt, snapshot.response.Quota)
+	response := s.attachWindowUsageStats(ctx, authIndex, snapshot.response, snapshot.observedAt)
+	s.observationRecorder.enqueue(reading)
 	// quota rows 和 token/cost 都准备好后，把任务切到 completed 并写入长期成功缓存。
-	s.markRefreshTaskCompleted(authIndex, response)
+	s.markRefreshTaskCompleted(authIndex, response, snapshot.observedAt)
 }
 
 func (s *Service) deleteRefreshTask(authIndex string) {
@@ -449,7 +451,7 @@ func isRefreshCacheableHTTPStatus(statusCode int) bool {
 	return ok
 }
 
-func (s *Service) markRefreshTaskRunning(authIndex string) (string, bool) {
+func (s *Service) markRefreshTaskRunning(authIndex string) (string, RefreshSource, bool) {
 	// now 记录任务真正开始执行的时间。
 	now := timeutil.NormalizeStorageTime(time.Now())
 	// refreshTasks 是共享 map，状态切换前必须加锁。
@@ -461,19 +463,19 @@ func (s *Service) markRefreshTaskRunning(authIndex string) (string, bool) {
 	// 只有 queued 任务可以切到 running，避免重复 goroutine 改写已完成任务。
 	if !ok || task.Status != RefreshTaskStatusQueued {
 		// 返回 false 告诉 worker 当前任务不应继续执行。
-		return "", false
+		return "", "", false
 	}
 	// 把任务状态切到 running，前端轮询会看到正在刷新。
 	task.Status = RefreshTaskStatusRunning
 	// 记录开始时间，便于前端展示或后续排查耗时。
 	task.StartedAt = now
 	// 返回任务记录中的 auth_index，保证后续使用锁内确认过的值。
-	return task.AuthIndex, true
+	return task.AuthIndex, task.Source, true
 }
 
-func (s *Service) markRefreshTaskCompleted(authIndex string, response CheckResponse) {
-	// now 同时作为完成时间和成功缓存写入时间。
-	now := timeutil.NormalizeStorageTime(time.Now())
+func (s *Service) markRefreshTaskCompleted(authIndex string, response CheckResponse, observedAt time.Time) {
+	// provider response 后固定的 observedAt 同时作为成功缓存时间。
+	observedAt = timeutil.NormalizeStorageTime(observedAt)
 	// refreshTasks 是共享 map，写 completed 状态前必须加锁。
 	s.refreshMu.Lock()
 	// 函数退出时释放锁，保证 quota 缓存和状态一起写入。
@@ -488,7 +490,7 @@ func (s *Service) markRefreshTaskCompleted(authIndex string, response CheckRespo
 	// 标记任务完成，前端轮询会停止 pending 状态。
 	task.Status = RefreshTaskStatusCompleted
 	// RefreshedAt 是对外唯一的刷新时间口径，成功缓存不设置 ExpiresAt。
-	task.RefreshedAt = now
+	task.RefreshedAt = observedAt
 	// 保存包含 token/cost 的 quota 响应，后续 cache 接口直接复用。
 	task.Quota = &response
 }

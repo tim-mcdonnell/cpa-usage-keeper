@@ -20,6 +20,10 @@ func (s *quotaResetCreditsProviderStub) GetCachedQuota(context.Context, quota.Ca
 	return quota.CacheResponse{}, nil
 }
 
+func (s *quotaResetCreditsProviderStub) ListObservations(context.Context, quota.ObservationSeriesRequest) (quota.ObservationSeriesResponse, error) {
+	return quota.ObservationSeriesResponse{}, nil
+}
+
 func (s *quotaResetCreditsProviderStub) Refresh(context.Context, quota.RefreshRequest) (quota.RefreshResponse, error) {
 	return quota.RefreshResponse{}, nil
 }

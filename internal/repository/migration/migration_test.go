@@ -72,6 +72,7 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260722_align_usage_activity_short",
 		"20260723_usage_overview_five_dimensions",
 		"20260723_model_price_rules",
+		"20260723_quota_observations",
 	}
 	assertStringSlicesEqual(t, want, got)
 }

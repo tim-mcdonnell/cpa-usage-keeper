@@ -17,5 +17,6 @@ func All() []any {
 		&UsageActivityAggregationCheckpoint{},
 		&AuthSession{},
 		&AppSetting{},
+		&QuotaObservation{},
 	}
 }
