@@ -30,6 +30,8 @@ type StatusProvider interface {
 
 type QuotaProvider interface {
 	GetCachedQuota(context.Context, quota.CacheRequest) (quota.CacheResponse, error)
+	GetCapacity(context.Context, quota.CapacityRequest) (quota.CapacityResponse, error)
+	GetCapacityDetail(context.Context, quota.CapacityDetailRequest) (quota.CapacityDetailResponse, error)
 	ListObservations(context.Context, quota.ObservationSeriesRequest) (quota.ObservationSeriesResponse, error)
 	Refresh(context.Context, quota.RefreshRequest) (quota.RefreshResponse, error)
 	GetRefreshTaskByAuthIndex(context.Context, string) (quota.RefreshTaskResponse, error)

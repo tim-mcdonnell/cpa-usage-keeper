@@ -13,6 +13,8 @@ var (
 	ErrProviderInput   = errors.New("quota provider input is invalid")
 	ErrTaskNotFound    = errors.New("quota refresh task not found")
 
+	ErrCapacityAuthIndexLimit = fmt.Errorf("%w: at most 100 auth_indexes per request", ErrValidation)
+
 	ErrResetInProgress = errors.New("quota reset already in progress")
 )
 
