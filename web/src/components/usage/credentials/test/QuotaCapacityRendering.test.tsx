@@ -8,6 +8,18 @@ import type { AuthFileCredentialRow } from '../credentialViewModels'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
+vi.mock('../CapacityDetailModal', () => ({
+  CapacityDetailModal: ({
+    open,
+    target,
+  }: {
+    open: boolean
+    target: { windowKindID: string; epochResetAt?: string } | null
+  }) => open && target
+    ? <div data-capacity-detail-modal={`${target.windowKindID}:${target.epochResetAt ?? ''}`} />
+    : null,
+}))
+
 const translations: Record<string, string> = {
   'usage_stats.credentials_quota_usage_mode_current': 'Current',
   'usage_stats.credentials_quota_usage_mode_estimated': 'Estimated',
@@ -15,6 +27,7 @@ const translations: Record<string, string> = {
   'usage_stats.credentials_quota_confidence_high': 'High confidence',
   'usage_stats.credentials_quota_confidence_medium': 'Medium confidence',
   'usage_stats.credentials_quota_history_hint': 'History still building',
+  'usage_stats.credentials_capacity_open': 'Open capacity evidence',
   'usage_stats.credentials_quota_flag_pricing_changed_suppressed': 'Cost capacity is unavailable because pricing changed during this window.',
   'usage_stats.credentials_quota_flag_pricing_changed_segment': 'Cost capacity uses one consistent pricing segment; token capacity uses the full estimate.',
 }
@@ -76,6 +89,10 @@ const createRow = (): AuthFileCredentialRow => ({
       confidence: 'medium',
       flags: ['pricing_changed'],
       costCapacity: 'suppressed',
+    },
+    capacityDetail: {
+      windowKindID: 'codex/overall/rate_limit/18000',
+      epochResetAt: '2026-07-23T15:00:00Z',
     },
     status: 'ok',
   }],
@@ -251,5 +268,26 @@ describe('Credentials quota capacity rendering', () => {
     expect(container.textContent).not.toContain('At your recent usage mix')
     expect(container.querySelector('[data-confidence]')).toBeNull()
     expect(container.querySelector('[data-capacity-flags]')).toBeNull()
+  })
+
+  it('opens the selected canonical window from the quota-bar evidence affordance', async () => {
+    await act(async () => {
+      root.render(
+        <AuthFileCredentialsSection
+          {...sectionProps(createRow())}
+          quotaUsageMode="estimated"
+        />,
+      )
+    })
+
+    const openButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open capacity evidence"]',
+    )
+    expect(openButton).not.toBeNull()
+    await act(async () => openButton?.click())
+
+    expect(document.querySelector('[data-capacity-detail-modal]')?.getAttribute('data-capacity-detail-modal')).toBe(
+      'codex/overall/rate_limit/18000:2026-07-23T15:00:00Z',
+    )
   })
 })
