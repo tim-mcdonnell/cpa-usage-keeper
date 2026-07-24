@@ -34,6 +34,14 @@ func (s *quotaAutoRefreshSettingsProviderStub) ListObservations(context.Context,
 	return quota.ObservationSeriesResponse{}, nil
 }
 
+func (s *quotaAutoRefreshSettingsProviderStub) GetCapacity(context.Context, quota.CapacityRequest) (quota.CapacityResponse, error) {
+	return quota.CapacityResponse{}, nil
+}
+
+func (s *quotaAutoRefreshSettingsProviderStub) GetCapacityDetail(context.Context, quota.CapacityDetailRequest) (quota.CapacityDetailResponse, error) {
+	return quota.CapacityDetailResponse{}, nil
+}
+
 func (s *quotaAutoRefreshSettingsProviderStub) GetInspectionStatus(context.Context) (quota.InspectionStatus, error) {
 	return quota.InspectionStatus{}, nil
 }

@@ -11,6 +11,7 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/pricing"
+	"cpa-usage-keeper/internal/quota/estimate"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/timeutil"
 
@@ -21,14 +22,16 @@ type ServiceOptions struct {
 	RefreshWorkerLimit               int
 	UsageHeaderSnapshotFlushInterval time.Duration
 	PricingCatalog                   *pricing.Catalog
+	Estimator                        estimate.Estimator
 }
 
 const usageHeaderSnapshotQueueSize = 100
 
 type Service struct {
-	db       *gorm.DB
-	registry ProviderRegistry
-	pricing  *pricing.Catalog
+	db        *gorm.DB
+	registry  ProviderRegistry
+	pricing   *pricing.Catalog
+	estimator estimate.Estimator
 
 	refreshMu    sync.Mutex
 	refreshTasks map[string]*RefreshTaskRecord
@@ -115,10 +118,15 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 	if pricingCatalog == nil {
 		panic("pricing catalog is required")
 	}
+	quotaEstimator := options.Estimator
+	if quotaEstimator == nil {
+		quotaEstimator = estimate.New(estimate.DefaultConfig())
+	}
 	service := &Service{
 		db:                         db,
 		registry:                   registry,
 		pricing:                    pricingCatalog,
+		estimator:                  quotaEstimator,
 		refreshTasks:               make(map[string]*RefreshTaskRecord),
 		resetInFlight:              make(map[string]struct{}),
 		refreshWorkerTokens:        make(chan struct{}, workerLimit),

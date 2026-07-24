@@ -24,6 +24,14 @@ func (s *quotaResetCreditsProviderStub) ListObservations(context.Context, quota.
 	return quota.ObservationSeriesResponse{}, nil
 }
 
+func (s *quotaResetCreditsProviderStub) GetCapacity(context.Context, quota.CapacityRequest) (quota.CapacityResponse, error) {
+	return quota.CapacityResponse{}, nil
+}
+
+func (s *quotaResetCreditsProviderStub) GetCapacityDetail(context.Context, quota.CapacityDetailRequest) (quota.CapacityDetailResponse, error) {
+	return quota.CapacityDetailResponse{}, nil
+}
+
 func (s *quotaResetCreditsProviderStub) Refresh(context.Context, quota.RefreshRequest) (quota.RefreshResponse, error) {
 	return quota.RefreshResponse{}, nil
 }

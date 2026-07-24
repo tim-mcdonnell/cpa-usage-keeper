@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"cpa-usage-keeper/internal/quota"
 	"cpa-usage-keeper/internal/timeutil"
@@ -20,6 +21,70 @@ const quotaResetErrorFailed = "quota_reset_failed"
 const quotaResetCreditsErrorFailed = "quota_reset_credits_failed"
 
 func registerQuotaRoutes(router gin.IRoutes, provider QuotaProvider) {
+	router.POST("/quota/capacity", func(c *gin.Context) {
+		if provider == nil {
+			writeInternalError(c, "quota provider is not configured", nil)
+			return
+		}
+		var request quotaRequest
+		if err := c.ShouldBindJSON(&request); err != nil || len(request.AuthIndexes) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "auth_indexes are required"})
+			return
+		}
+		response, err := provider.GetCapacity(c.Request.Context(), quota.CapacityRequest{
+			AuthIndexes: request.AuthIndexes,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, quota.ErrValidation):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "auth_indexes are required"})
+			default:
+				writeInternalError(c, "quota capacity lookup failed", err)
+			}
+			return
+		}
+		c.JSON(http.StatusOK, response)
+	})
+
+	router.GET("/quota/capacity/detail", func(c *gin.Context) {
+		if provider == nil {
+			writeInternalError(c, "quota provider is not configured", nil)
+			return
+		}
+		authIndex := strings.TrimSpace(c.Query("auth_index"))
+		windowKindID := strings.TrimSpace(c.Query("window_kind_id"))
+		var epochResetAt *time.Time
+		if rawEpochResetAt := strings.TrimSpace(c.Query("epoch_reset_at")); rawEpochResetAt != "" {
+			parsed, err := timeutil.ParseStorageTime(rawEpochResetAt)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "capacity detail parameters are invalid"})
+				return
+			}
+			epochResetAt = &parsed
+		}
+		if authIndex == "" || windowKindID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "capacity detail parameters are invalid"})
+			return
+		}
+		response, err := provider.GetCapacityDetail(c.Request.Context(), quota.CapacityDetailRequest{
+			AuthIndex:    authIndex,
+			WindowKindID: windowKindID,
+			EpochResetAt: epochResetAt,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, quota.ErrValidation):
+				c.JSON(http.StatusBadRequest, gin.H{"error": "capacity detail parameters are invalid"})
+			case errors.Is(err, quota.ErrNotFound):
+				c.JSON(http.StatusNotFound, gin.H{"error": "quota capacity not found"})
+			default:
+				writeInternalError(c, "quota capacity detail lookup failed", err)
+			}
+			return
+		}
+		c.JSON(http.StatusOK, response)
+	})
+
 	router.GET("/quota/observations", func(c *gin.Context) {
 		if provider == nil {
 			writeInternalError(c, "quota provider is not configured", nil)

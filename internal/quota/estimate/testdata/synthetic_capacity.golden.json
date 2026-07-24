@@ -1,0 +1,116 @@
+[
+  {
+    "name": "known_rounded_capacity",
+    "confidence": "high",
+    "flags": [],
+    "marginal_tokens_per_100": 2000,
+    "tokens_at_100": 1800,
+    "tokens_ci_95": {
+      "low": 1800,
+      "high": 1800,
+      "unbounded_high": false
+    },
+    "slope_instability": 0,
+    "point_class_counts": {
+      "included": 10
+    },
+    "nonzero_offsets": null
+  },
+  {
+    "name": "known_sub_integer_resolution",
+    "confidence": "high",
+    "flags": [],
+    "marginal_tokens_per_100": 40000,
+    "tokens_at_100": 36000,
+    "tokens_ci_95": {
+      "low": 36000,
+      "high": 36000,
+      "unbounded_high": false
+    },
+    "slope_instability": 0,
+    "point_class_counts": {
+      "included": 121
+    },
+    "nonzero_offsets": null
+  },
+  {
+    "name": "unstable_bootstrap_slope",
+    "confidence": "low",
+    "flags": [],
+    "marginal_tokens_per_100": 1681,
+    "tokens_at_100": 1782,
+    "tokens_ci_95": {
+      "low": 1189.364207,
+      "high": 4548.592871,
+      "unbounded_high": false
+    },
+    "slope_instability": 0.875,
+    "point_class_counts": {
+      "included": 12
+    },
+    "nonzero_offsets": null
+  },
+  {
+    "name": "zero_coverage_bypass",
+    "confidence": "low",
+    "flags": [
+      "coverage_gap"
+    ],
+    "marginal_tokens_per_100": 2000,
+    "tokens_at_100": 1800,
+    "tokens_ci_95": {
+      "low": 1800,
+      "high": 1800,
+      "unbounded_high": false
+    },
+    "slope_instability": 0,
+    "point_class_counts": {
+      "coverage_gap_interval": 1,
+      "included": 5,
+      "pricing_excluded": 4
+    },
+    "nonzero_offsets": [
+      {
+        "observation_id": 5,
+        "offset": 10
+      },
+      {
+        "observation_id": 6,
+        "offset": 10
+      },
+      {
+        "observation_id": 7,
+        "offset": 10
+      },
+      {
+        "observation_id": 8,
+        "offset": 10
+      },
+      {
+        "observation_id": 9,
+        "offset": 10
+      },
+      {
+        "observation_id": 10,
+        "offset": 10
+      }
+    ]
+  },
+  {
+    "name": "concurrent_bypass_biased_without_flag",
+    "confidence": "medium",
+    "flags": [],
+    "marginal_tokens_per_100": 1486,
+    "tokens_at_100": 1386,
+    "tokens_ci_95": {
+      "low": 1165.909091,
+      "high": 1748.863636,
+      "unbounded_high": false
+    },
+    "slope_instability": 0.375,
+    "point_class_counts": {
+      "included": 10
+    },
+    "nonzero_offsets": null
+  }
+]
