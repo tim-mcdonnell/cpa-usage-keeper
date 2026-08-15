@@ -235,6 +235,14 @@ func TestQuotaCapacityDetailReturnsClassificationsObservationsAndExactFittedSeri
 			AuthIndex:    "auth-1",
 			WindowKindID: estimate.WindowKindCodexFiveHour,
 		}},
+		Epochs: []estimate.WindowEstimate{{
+			Provider:      "codex",
+			WindowKindID:  estimate.WindowKindCodexFiveHour,
+			WindowSeconds: 18000,
+			EpochResetAt:  &resetAt,
+			Confidence:    estimate.ConfidenceLow,
+			Method:        estimate.MethodOLSBlockBootstrap,
+		}},
 	}}
 	path := "/api/v1/quota/capacity/detail?auth_index=auth-1" +
 		"&window_kind_id=codex%2Foverall%2Frate_limit%2F18000" +
@@ -258,7 +266,8 @@ func TestQuotaCapacityDetailReturnsClassificationsObservationsAndExactFittedSeri
 	if !contains(body, `"class":"coverage_gap_interval"`) ||
 		!contains(body, `"cumulative_percent_offset":2`) ||
 		!contains(body, `"adjusted_used_percent":10`) ||
-		!contains(body, `"observations":[{"id":7`) {
+		!contains(body, `"observations":[{"id":7`) ||
+		!contains(body, `"epochs":[{"provider":"codex","window_kind_id":"codex/overall/rate_limit/18000"`) {
 		t.Fatalf("unexpected capacity detail response: %s", body)
 	}
 }

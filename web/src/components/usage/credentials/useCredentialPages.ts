@@ -217,14 +217,16 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
     if (!enabledAuthFiles) {
       authFilesRequestControllerRef.current?.abort()
       authFilesRequestControllerRef.current = null
-      setAuthFilesLoading(false)
       return
     }
-    void refreshAuthFiles()
+    const initialRefreshID = window.setTimeout(() => {
+      void refreshAuthFiles()
+    }, 0)
     const intervalID = window.setInterval(() => {
       void refreshAuthFiles()
     }, CREDENTIAL_PAGES_REFRESH_INTERVAL_MS)
     return () => {
+      window.clearTimeout(initialRefreshID)
       window.clearInterval(intervalID)
       authFilesRequestControllerRef.current?.abort()
       authFilesRequestControllerRef.current = null
@@ -235,14 +237,16 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
     if (!enabledAiProviders) {
       aiProvidersRequestControllerRef.current?.abort()
       aiProvidersRequestControllerRef.current = null
-      setAiProvidersLoading(false)
       return
     }
-    void refreshAiProviders()
+    const initialRefreshID = window.setTimeout(() => {
+      void refreshAiProviders()
+    }, 0)
     const intervalID = window.setInterval(() => {
       void refreshAiProviders()
     }, CREDENTIAL_PAGES_REFRESH_INTERVAL_MS)
     return () => {
+      window.clearTimeout(initialRefreshID)
       window.clearInterval(intervalID)
       aiProvidersRequestControllerRef.current?.abort()
       aiProvidersRequestControllerRef.current = null

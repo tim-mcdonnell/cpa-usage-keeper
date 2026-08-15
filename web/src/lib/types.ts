@@ -465,6 +465,125 @@ export interface UsageQuotaCacheResponse {
   items: UsageQuotaCacheItem[]
 }
 
+export type UsageQuotaCapacityConfidence = 'high' | 'medium' | 'low' | 'insufficient'
+
+export type UsageQuotaCapacityFlag =
+  | 'pricing_changed'
+  | 'unpriced_models'
+  | 'coverage_gap'
+  | 'mix_shift'
+  | 'reset_ambiguous'
+  | 'identity_changed'
+  | 'identity_unverified'
+  | 'stale'
+
+export interface UsageQuotaCapacityInterval {
+  low: number
+  high: number | null
+  unbounded_high?: boolean
+}
+
+export interface UsageQuotaCapacitySegment {
+  pricing_snapshot_hash: string
+  start: string
+  end: string
+}
+
+export type UsageQuotaCapacityPointClass =
+  | 'included'
+  | 'outlier'
+  | 'coverage_gap_interval'
+  | 'stale_quarantined'
+  | 'pricing_excluded'
+  | 'pre_break'
+  | 'epoch_unassigned'
+
+export interface UsageQuotaCapacityPointDiagnostic {
+  observation_id: number
+  class: UsageQuotaCapacityPointClass
+  cumulative_percent_offset: number
+}
+
+export interface UsageQuotaCapacityFittedPoint {
+  observation_id: number
+  attributed_tokens: number
+  raw_used_percent: number
+  adjusted_used_percent: number
+  cumulative_percent_offset: number
+  fitted_percent: number
+}
+
+export interface UsageQuotaWindowEstimate {
+  provider: string
+  window_kind_id: string
+  window_seconds: number
+  epoch_reset_at: string | null
+  sample_count: number
+  effective_samples: number
+  distinct_percents: number
+  percent_resolution: number
+  percent_span: number
+  slope: number | null
+  intercept: number | null
+  marginal_tokens_per_100: number | null
+  tokens_at_100: number | null
+  marginal_tokens_ci_95: UsageQuotaCapacityInterval | null
+  tokens_ci_95: UsageQuotaCapacityInterval | null
+  marginal_cost_per_100: number | null
+  cost_at_100: number | null
+  marginal_cost_ci_95: UsageQuotaCapacityInterval | null
+  cost_ci_95: UsageQuotaCapacityInterval | null
+  cost_segment: UsageQuotaCapacitySegment | null
+  r_squared: number | null
+  slope_instability: number | null
+  confidence: UsageQuotaCapacityConfidence
+  flags: UsageQuotaCapacityFlag[]
+  points?: UsageQuotaCapacityPointDiagnostic[]
+  fitted_series?: UsageQuotaCapacityFittedPoint[]
+  method: string
+}
+
+export interface UsageQuotaCapacityWindow {
+  provider: string
+  window_kind_id: string
+  window_seconds: number
+  current_epoch: UsageQuotaWindowEstimate | null
+  recent_epochs: UsageQuotaWindowEstimate[]
+}
+
+export interface UsageQuotaCapacityItem {
+  auth_index: string
+  windows: UsageQuotaCapacityWindow[]
+}
+
+export interface UsageQuotaCapacityResponse {
+  items: UsageQuotaCapacityItem[]
+}
+
+export interface UsageQuotaCapacityObservation {
+  id: number
+  auth_index: string
+  provider: string
+  window_kind_id: string
+  quota_key: string
+  scope: string
+  group_key: string
+  window_role: string
+  observed_at: string
+  source: string
+  used_percent: number | null
+  attributed_tokens: number | null
+  attributed_cost_usd: number | null
+  attributed_cost_complete: boolean
+  pricing_snapshot_hash: string
+}
+
+export interface UsageQuotaCapacityDetailResponse {
+  estimate: UsageQuotaWindowEstimate
+  observations: UsageQuotaCapacityObservation[]
+  epochs: UsageQuotaWindowEstimate[]
+}
+
 export interface AuthFilesManagementResponse {
   names: string[]
   affected: number

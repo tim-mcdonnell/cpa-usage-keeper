@@ -1410,7 +1410,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [eventsColumnOrder, eventsModelFilter, eventsResultFilter, eventsSourceFilter, eventsVisibleColumnIds]);
 
   useEffect(() => {
-    setEventsPage(1);
+    const timeoutID = window.setTimeout(() => setEventsPage(1), 0);
+    return () => window.clearTimeout(timeoutID);
   }, [selectedApiKeyId, usageRangeQuery]);
 
   useEffect(() => {
@@ -1459,23 +1460,32 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [onAuthRequired]);
 
   useEffect(() => {
-    void loadApiKeyOptions();
+    const timeoutID = window.setTimeout(() => {
+      void loadApiKeyOptions();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutID);
       apiKeyOptionsRequestControllerRef.current?.abort();
       apiKeyOptionsRequestControllerRef.current = null;
     };
   }, [loadApiKeyOptions]);
 
   useEffect(() => {
-    if (selectedApiKeyId && !apiKeyOptions.some((option) => option.id === selectedApiKeyId)) {
-      setSelectedApiKeyId('');
-    }
+    const timeoutID = window.setTimeout(() => {
+      if (selectedApiKeyId && !apiKeyOptions.some((option) => option.id === selectedApiKeyId)) {
+        setSelectedApiKeyId('');
+      }
+    }, 0);
+    return () => window.clearTimeout(timeoutID);
   }, [apiKeyOptions, selectedApiKeyId]);
 
   useEffect(() => {
-    if (!shouldShowUpdateCheckButton(versionInfo)) {
-      setHasNewVersion(false);
-    }
+    const timeoutID = window.setTimeout(() => {
+      if (!shouldShowUpdateCheckButton(versionInfo)) {
+        setHasNewVersion(false);
+      }
+    }, 0);
+    return () => window.clearTimeout(timeoutID);
   }, [versionInfo]);
 
   useEffect(() => () => {
@@ -1859,7 +1869,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
 	  useEffect(() => {
 	    if (activeTab === 'events') return;
-	    handleRequestLogClose();
+	    const timeoutID = window.setTimeout(handleRequestLogClose, 0);
+	    return () => window.clearTimeout(timeoutID);
 	  }, [activeTab, handleRequestLogClose]);
 
 	  useEffect(() => {
@@ -1868,25 +1879,31 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       eventsFilterOptionsRequestControllerRef.current = null;
       return;
     }
-    void loadEventFilterOptions();
+    const timeoutID = window.setTimeout(() => {
+      void loadEventFilterOptions();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutID);
       eventsFilterOptionsRequestControllerRef.current?.abort();
       eventsFilterOptionsRequestControllerRef.current = null;
     };
   }, [activeTab, loadEventFilterOptions]);
 
   useEffect(() => {
-    if (activeTab !== 'events') {
-      eventsRequestControllerRef.current?.abort();
-      eventsRequestControllerRef.current = null;
-      eventsLoadMoreRequestControllerRef.current?.abort();
-      eventsLoadMoreRequestControllerRef.current = null;
-      setEventsLoading(false);
-      setEventsLoadingMore(false);
-      return;
+	if (activeTab !== 'events') {
+	  eventsRequestControllerRef.current?.abort();
+	  eventsRequestControllerRef.current = null;
+	  eventsLoadMoreRequestControllerRef.current?.abort();
+	  eventsLoadMoreRequestControllerRef.current = null;
+	  setEventsLoading(false);
+	  setEventsLoadingMore(false);
+	  return;
     }
-    void loadEvents();
+    const timeoutID = window.setTimeout(() => {
+      void loadEvents();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutID);
       eventsRequestControllerRef.current?.abort();
       eventsRequestControllerRef.current = null;
       eventsLoadMoreRequestControllerRef.current?.abort();
@@ -1898,12 +1915,13 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (activeTab !== 'analysis') {
       analysisRequestControllerRef.current?.abort();
       analysisRequestControllerRef.current = null;
-      setAnalysisLoading(false);
-      setAnalysisLatencyLoading(false);
       return;
     }
-    void loadAnalysis();
+    const timeoutID = window.setTimeout(() => {
+      void loadAnalysis();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutID);
       analysisRequestControllerRef.current?.abort();
       analysisRequestControllerRef.current = null;
     };
@@ -1913,15 +1931,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (activeTab !== 'settings') {
       apiKeySettingsRequestControllerRef.current?.abort();
       apiKeySettingsRequestControllerRef.current = null;
-      setApiKeySettingsLoading(false);
       authSessionsRequestControllerRef.current?.abort();
       authSessionsRequestControllerRef.current = null;
-      setAuthSessionsLoading(false);
       return;
     }
-    void loadApiKeySettings();
-    void loadAuthSessions();
+    const timeoutID = window.setTimeout(() => {
+      void loadApiKeySettings();
+      void loadAuthSessions();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutID);
       apiKeySettingsRequestControllerRef.current?.abort();
       apiKeySettingsRequestControllerRef.current = null;
       authSessionsRequestControllerRef.current?.abort();
@@ -1943,18 +1962,21 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       eventsFilterOptionsLoaded,
     );
 
-    if (next.model !== eventsModelFilter) {
-      setEventsModelFilter(next.model);
-    }
-    if (next.source !== eventsSourceFilter) {
-      setEventsSourceFilter(next.source);
-    }
-    if (next.result !== eventsResultFilter) {
-      setEventsResultFilter(next.result);
-    }
-    if (next.model !== eventsModelFilter || next.source !== eventsSourceFilter || next.result !== eventsResultFilter) {
-      resetEventsPage();
-    }
+    const timeoutID = window.setTimeout(() => {
+      if (next.model !== eventsModelFilter) {
+        setEventsModelFilter(next.model);
+      }
+      if (next.source !== eventsSourceFilter) {
+        setEventsSourceFilter(next.source);
+      }
+      if (next.result !== eventsResultFilter) {
+        setEventsResultFilter(next.result);
+      }
+      if (next.model !== eventsModelFilter || next.source !== eventsSourceFilter || next.result !== eventsResultFilter) {
+        resetEventsPage();
+      }
+    }, 0);
+    return () => window.clearTimeout(timeoutID);
   }, [eventsFilterOptionsLoaded, eventsModelFilter, eventsModelOptions, eventsResultFilter, eventsSourceFilter, eventsSourceOptions, resetEventsPage]);
 
   const displayStatusError = statusError === 'REFRESH_FAILED' ? t('notification.refresh_failed') : statusError;
@@ -2350,6 +2372,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       quotaInspectionLoading={credentialsData.quotaInspectionLoading}
                       quotaInspectionStarting={credentialsData.quotaInspectionStarting}
                       quotaInspectionError={credentialsData.quotaInspectionError}
+                      quotaUsageMode={credentialsData.quotaUsageMode}
+                      onQuotaUsageModeChange={credentialsData.setQuotaUsageMode}
                       onPageChange={credentialsData.setAuthFilePage}
                       onPageSizeChange={credentialsData.setAuthFilePageSize}
                       onActiveOnlyChange={credentialsData.setAuthFileActiveOnly}
@@ -2362,6 +2386,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       onRefreshInspectionStatus={credentialsData.refreshQuotaInspectionStatus}
                       onStartInspection={credentialsData.startQuotaInspection}
                       onAfterInvalidAccountAction={credentialsData.refresh}
+                      onAuthRequired={onAuthRequired}
                     />
                   )}
                   {credentialSectionVisibility.showAiProvider && (

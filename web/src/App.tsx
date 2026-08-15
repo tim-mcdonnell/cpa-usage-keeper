@@ -64,9 +64,12 @@ function App() {
   }, [applySession]);
 
   useEffect(() => {
-    void loadSession().catch(() => {
-      clearSession();
-    });
+    const timeoutID = window.setTimeout(() => {
+      void loadSession().catch(() => {
+        clearSession();
+      });
+    }, 0);
+    return () => window.clearTimeout(timeoutID);
   }, [clearSession, loadSession]);
 
   useEffect(() => {

@@ -329,8 +329,9 @@ describe('Credential section styles', () => {
   })
 
   it('keeps the Auth File filename tooltip target on the normal arrow cursor', () => {
-    expect(credentialStyles).toMatch(/\.credentialFileNameTooltipTarget\s*\{[\s\S]*?cursor:\s*default;/)
-    expect(credentialStyles).not.toMatch(/\.credentialFileNameTooltipTarget\s*\{[\s\S]*?cursor:\s*help;/)
+    const filenameTooltipRule = scssRule(credentialStyles, '.credentialFileNameTooltipTarget')
+    expect(filenameTooltipRule).toMatch(/cursor:\s*default;/)
+    expect(filenameTooltipRule).not.toMatch(/cursor:\s*help;/)
   })
 
   it('keeps Auth Files inspection separate from the quota refresh pill', () => {
@@ -563,5 +564,17 @@ describe('Credential section styles', () => {
     expect(scssRule(darkRules, '.credentialPlanBadgePro20x')).toContain('color: #302200;')
     expect(scssRule(darkRules, '.credentialPlanBadgeEnterprise')).toContain('color: #26324a;')
     expect(scssRule(darkRules, '.credentialRemainingDaysBadge')).toContain('color: #bbf7d0;')
+  })
+
+  it('wraps capacity context and keeps flag details keyboard accessible at quota-bar widths', () => {
+    expect(cssBlock('.credentialQuotaCapacitySummary')).toContain('min-width: 0;')
+    expect(cssBlock('.credentialQuotaCapacityContext')).toContain('flex-wrap: wrap;')
+    expect(cssBlock('.credentialQuotaCapacityMixLabel')).toContain('overflow-wrap: anywhere;')
+    expect(cssBlock('.credentialQuotaCapacityMixLabel')).toContain('white-space: normal !important;')
+    expect(cssBlock('.credentialQuotaConfidenceBadgeMedium')).toContain('#d97706')
+    expect(cssBlock('.credentialQuotaConfidenceBadgeHigh')).toContain('var(--text-secondary)')
+    expect(cssBlock('.credentialQuotaCapacityFlagTarget')).toMatch(/&:focus-visible\s*\{[\s\S]*?outline:/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaCapacityFlagTarget:focus-visible \.credentialQuotaCapacityFlagTooltip\s*\{[\s\S]*?opacity:\s*1;/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaBarBlock:nth-child\(even\) \.credentialQuotaCapacityFlagTooltip\s*\{[\s\S]*?right:\s*0;/)
   })
 })

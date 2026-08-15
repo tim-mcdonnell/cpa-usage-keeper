@@ -42,7 +42,63 @@ describe('i18n resources', () => {
     expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_auth_files_display_mode_health')).toBe('健康');
   });
 
-  it('localizes the Auth Files inspection title in every language', () => {
+	it('localizes confidence-aware credential capacity copy in every language', () => {
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_capacity_recent_mix')).toBe('At your recent usage mix');
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_confidence_medium')).toBe('Medium confidence');
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_history_hint')).toBe('History still building');
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_quota_flag_pricing_changed_segment')).toContain('pricing segment');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_capacity_recent_mix')).toBe('按该凭证近期用量构成估算');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_confidence_medium')).toBe('中等置信度');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_history_hint')).toBe('历史数据仍在积累');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_quota_flag_pricing_changed_segment')).toContain('价格一致的一个区间');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_capacity_recent_mix')).toBe('依此憑證近期用量組成估算');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_confidence_medium')).toBe('中等可信度');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_history_hint')).toBe('歷史資料仍在累積');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_quota_flag_pricing_changed_segment')).toContain('價格一致的一個區段');
+  });
+
+  it('provides complete natural capacity drill-down copy in every language', () => {
+    const keys = [
+      'credentials_capacity_title',
+      'credentials_capacity_open',
+      'credentials_capacity_tokens_at_100',
+      'credentials_capacity_suppressed_cost',
+      'credentials_capacity_epoch_selector',
+      'credentials_capacity_no_epochs',
+      'credentials_capacity_chart_aria',
+      'credentials_capacity_raw_fit_explanation',
+      'credentials_capacity_missing_fit',
+      'credentials_capacity_class_included',
+      'credentials_capacity_class_outlier',
+      'credentials_capacity_class_coverage_gap_interval',
+      'credentials_capacity_class_stale_quarantined',
+      'credentials_capacity_class_pricing_excluded',
+      'credentials_capacity_class_pre_break',
+      'credentials_capacity_class_epoch_unassigned',
+      'credentials_capacity_flag_title_pricing_changed',
+      'credentials_capacity_flag_title_unpriced_models',
+      'credentials_capacity_flag_title_coverage_gap',
+      'credentials_capacity_flag_title_mix_shift',
+      'credentials_capacity_flag_title_reset_ambiguous',
+      'credentials_capacity_flag_title_identity_changed',
+      'credentials_capacity_flag_title_identity_unverified',
+      'credentials_capacity_flag_title_stale',
+      'credentials_capacity_concurrent_bypass',
+    ];
+    for (const language of ['en', 'zh', 'zh-TW']) {
+      for (const key of keys) {
+        const value = i18n.getResource(language, 'translation', `usage_stats.${key}`);
+        expect(value, `${language}:${key}`).toBeTypeOf('string');
+        expect(value.trim(), `${language}:${key}`).not.toBe('');
+      }
+    }
+
+    expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_capacity_concurrent_bypass')).toContain('same time');
+    expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_capacity_concurrent_bypass')).toContain('同时');
+    expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_capacity_concurrent_bypass')).toContain('同時');
+  });
+
+	it('localizes the Auth Files inspection title in every language', () => {
     expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_inspection_title')).toBe('Auth Files Inspection');
     expect(i18n.getResource('zh', 'translation', 'usage_stats.credentials_inspection_title')).toBe('认证文件巡检');
     expect(i18n.getResource('zh-TW', 'translation', 'usage_stats.credentials_inspection_title')).toBe('認證檔案巡檢');
@@ -124,7 +180,7 @@ describe('i18n resources', () => {
     }
   });
 
-  it('keeps credential table column headers available in every language', () => {
+	it('keeps credential table column headers available in every language', () => {
     expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_column_name')).toBe('Name');
     expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_column_quota')).toBe('Quota');
     expect(i18n.getResource('en', 'translation', 'usage_stats.credentials_column_health')).toBe('Health');

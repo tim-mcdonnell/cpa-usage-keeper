@@ -144,11 +144,13 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
       requestControllerRef.current = null;
       pricingRulesReadRequestRef.current = null;
       pricingRulesWriteRequestRef.current = null;
-      setLoading(false);
       return;
     }
-    void loadPricing();
+    const timeoutID = window.setTimeout(() => {
+      void loadPricing();
+    }, 0);
     return () => {
+      window.clearTimeout(timeoutID);
       requestControllerRef.current?.abort();
       pricingRulesReadRequestRef.current?.controller.abort();
       pricingRulesWriteRequestRef.current?.controller.abort();
@@ -287,7 +289,7 @@ export function usePricingData(options: UsePricingDataOptions = {}): UsePricingD
   return {
     modelNames,
     modelPrices,
-    loading,
+    loading: enabled ? loading : false,
     error,
     loadPricing,
     saveModelPrice,

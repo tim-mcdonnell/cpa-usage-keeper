@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { UsageIdentity, UsageQuotaCheckResponse, UsageQuotaRow, UsageSubscriptionInfo } from '@/lib/types'
+import type { UsageIdentity, UsageQuotaCapacityItem, UsageQuotaCheckResponse, UsageQuotaRow, UsageQuotaWindowEstimate, UsageSubscriptionInfo } from '@/lib/types'
 import {
   CREDENTIALS_PAGE_SIZE,
   buildAiProviderCredentialRows,
@@ -50,6 +50,53 @@ function identity(overrides: Partial<UsageIdentity>): UsageIdentity {
     updated_at: overrides.updated_at ?? '2026-05-09T00:00:00Z',
     deleted_at: overrides.deleted_at,
     displayName: overrides.displayName,
+  }
+}
+
+function capacityEstimate(
+  confidence: UsageQuotaWindowEstimate['confidence'],
+  overrides: Partial<UsageQuotaWindowEstimate> = {},
+): UsageQuotaWindowEstimate {
+  return {
+    provider: 'codex',
+    window_kind_id: 'codex/overall/rate_limit/18000',
+    window_seconds: 18_000,
+    epoch_reset_at: '2026-07-24T00:00:00Z',
+    sample_count: 8,
+    effective_samples: 8,
+    distinct_percents: 8,
+    percent_resolution: 1,
+    percent_span: 30,
+    slope: 0.00001,
+    intercept: 0,
+    marginal_tokens_per_100: 10_000_000,
+    tokens_at_100: 8_000_000,
+    marginal_tokens_ci_95: null,
+    tokens_ci_95: null,
+    marginal_cost_per_100: 25,
+    cost_at_100: 20,
+    marginal_cost_ci_95: null,
+    cost_ci_95: null,
+    cost_segment: null,
+    r_squared: 0.99,
+    slope_instability: 0.1,
+    confidence,
+    flags: [],
+    method: 'ols_moving_block_bootstrap_v1',
+    ...overrides,
+  }
+}
+
+function credentialCapacity(estimate: UsageQuotaWindowEstimate): UsageQuotaCapacityItem {
+  return {
+    auth_index: 'auth-1',
+    windows: [{
+      provider: 'codex',
+      window_kind_id: 'codex/overall/rate_limit/18000',
+      window_seconds: 18_000,
+      current_epoch: estimate,
+      recent_epochs: [],
+    }],
   }
 }
 
@@ -393,6 +440,235 @@ describe('credentialViewModels', () => {
       { tokens: '4.00M', cost: '$10.00' },
       { tokens: '2.00M', cost: '$4.00' },
     ])
+  })
+
+  it.each([
+    ['high', { tokens: '8.00M', cost: '$20.00', capacitySource: 'regression', confidence: 'high', flags: [] }],
+    ['medium', { tokens: '8.00M', cost: '$20.00', capacitySource: 'regression', confidence: 'medium', flags: [] }],
+    ['low', { tokens: '4.00M', cost: '$10.00', capacitySource: 'history', historyHint: true }],
+    ['insufficient', { tokens: '4.00M', cost: '$10.00' }],
+  ] as const)('applies the exact %s confidence cutover', (confidence, expected) => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.primary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const capacities = new Map<string, UsageQuotaCapacityItem>([
+      ['auth-1', credentialCapacity(capacityEstimate(confidence))],
+    ])
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      capacities,
+    )
+
+    expect(rows[0].displayQuotas[0].windowUsageEstimate).toEqual(expected)
+  })
+
+  it('carries only the canonical window identity and selected epoch into the drill-down target', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.secondary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const estimate = capacityEstimate('insufficient')
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', credentialCapacity(estimate)]]),
+    )
+
+    expect(rows[0].displayQuotas[0].capacityDetail).toEqual({
+      windowKindID: 'codex/overall/rate_limit/18000',
+      epochResetAt: '2026-07-24T00:00:00Z',
+    })
+    expect(JSON.stringify(rows[0].displayQuotas[0].capacityDetail)).not.toContain('secondary')
+  })
+
+  it('silently preserves the one-point display when capacity history is absent', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.primary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+
+    const withoutCapacity = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+    )
+    const withEmptyCapacity = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', { auth_index: 'auth-1', windows: [] }]]),
+    )
+
+    expect(withoutCapacity[0].displayQuotas[0].windowUsageEstimate).toEqual({
+      tokens: '4.00M',
+      cost: '$10.00',
+    })
+    expect(withEmptyCapacity[0].displayQuotas[0].windowUsageEstimate).toEqual(
+      withoutCapacity[0].displayQuotas[0].windowUsageEstimate,
+    )
+  })
+
+  it('renders medium-confidence token capacity when cost is suppressed', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.primary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const estimate = capacityEstimate('medium', {
+      cost_at_100: null,
+      cost_segment: null,
+      flags: ['pricing_changed'],
+    })
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', credentialCapacity(estimate)]]),
+    )
+
+    expect(rows[0].displayQuotas[0].windowUsageEstimate).toEqual({
+      tokens: '8.00M',
+      capacitySource: 'regression',
+      confidence: 'medium',
+      flags: ['pricing_changed'],
+      costCapacity: 'suppressed',
+    })
+  })
+
+  it('labels a medium-confidence cost capacity as pricing-segment scoped', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.primary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const estimate = capacityEstimate('medium', {
+      cost_at_100: 19,
+      cost_segment: {
+        pricing_snapshot_hash: 'sha256:pricing',
+        start: '2026-07-23T12:00:00Z',
+        end: '2026-07-23T18:00:00Z',
+      },
+      flags: ['pricing_changed'],
+    })
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', credentialCapacity(estimate)]]),
+    )
+
+    expect(rows[0].displayQuotas[0].windowUsageEstimate).toEqual({
+      tokens: '8.00M',
+      cost: '$19.00',
+      capacitySource: 'regression',
+      confidence: 'medium',
+      flags: ['pricing_changed'],
+      costCapacity: 'segment_scoped',
+    })
+  })
+
+  it('keeps token capacity visible when a pricing segment exists without cost capacity', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.primary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const estimate = capacityEstimate('medium', {
+      cost_at_100: null,
+      cost_segment: {
+        pricing_snapshot_hash: 'sha256:pricing',
+        start: '2026-07-23T12:00:00Z',
+        end: '2026-07-23T18:00:00Z',
+      },
+      flags: ['pricing_changed'],
+    })
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', credentialCapacity(estimate)]]),
+    )
+
+    expect(rows[0].displayQuotas[0].windowUsageEstimate).toEqual({
+      tokens: '8.00M',
+      capacitySource: 'regression',
+      confidence: 'medium',
+      flags: ['pricing_changed'],
+      costCapacity: 'segment_scoped',
+    })
+  })
+
+  it('preserves explicit zero capacity values instead of treating them as missing', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [{
+        key: 'rate_limit.primary_window',
+        label: '5h',
+        usedPercent: 25,
+        window: { seconds: 18_000 },
+        window_usage_tokens: 1_000_000,
+        window_usage_cost: 2.5,
+      }])],
+    ])
+    const estimate = capacityEstimate('medium', {
+      tokens_at_100: 0,
+      cost_at_100: 0,
+    })
+
+    const rows = buildAuthFileCredentialRows(
+      [identity({ identity: 'auth-1', type: 'codex', provider: 'codex' })],
+      quotas,
+      new Map(),
+      new Map([['auth-1', credentialCapacity(estimate)]]),
+    )
+
+    expect(rows[0].displayQuotas[0].windowUsageEstimate).toEqual({
+      tokens: '0',
+      cost: '$0.00',
+      capacitySource: 'regression',
+      confidence: 'medium',
+      flags: [],
+    })
   })
 
   it('keeps current quota window usage when the used percent or current cost cannot be estimated', () => {

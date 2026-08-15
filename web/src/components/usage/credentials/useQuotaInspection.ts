@@ -73,9 +73,14 @@ export function useQuotaInspection({ enabled, onAuthRequired, onInspectionComple
   }, [handleInspectionError])
 
   useEffect(() => {
+    let cancelled = false
     if (!enabled) {
-      setInspectionPollingActive(false)
-      return
+      queueMicrotask(() => {
+        if (!cancelled) setInspectionPollingActive(false)
+      })
+      return () => {
+        cancelled = true
+      }
     }
     const controller = new AbortController()
     const loadInitialInspectionStatus = async () => {
@@ -84,8 +89,11 @@ export function useQuotaInspection({ enabled, onAuthRequired, onInspectionComple
         setInspectionPollingActive(shouldContinueQuotaInspectionPolling(response))
       }
     }
-    void loadInitialInspectionStatus()
+    queueMicrotask(() => {
+      if (!cancelled) void loadInitialInspectionStatus()
+    })
     return () => {
+      cancelled = true
       controller.abort()
     }
   }, [enabled, loadQuotaInspectionStatus])

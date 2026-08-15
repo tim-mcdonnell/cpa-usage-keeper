@@ -59,6 +59,7 @@ type CapacityDetailRequest struct {
 type CapacityDetailResponse struct {
 	Estimate     estimate.WindowEstimate     `json:"estimate"`
 	Observations []entities.QuotaObservation `json:"observations"`
+	Epochs       []estimate.WindowEstimate   `json:"epochs"`
 }
 
 func (s *Service) GetCapacity(ctx context.Context, request CapacityRequest) (CapacityResponse, error) {
@@ -157,7 +158,21 @@ func (s *Service) GetCapacityDetail(ctx context.Context, request CapacityDetailR
 	return CapacityDetailResponse{
 		Estimate:     selected,
 		Observations: selectedObservations,
+		Epochs:       capacityEpochSummaries(estimates, now),
 	}, nil
+}
+
+func capacityEpochSummaries(estimates []estimate.WindowEstimate, now time.Time) []estimate.WindowEstimate {
+	window, ok := capacityWindowFromEstimates(estimates, now)
+	if !ok {
+		return []estimate.WindowEstimate{}
+	}
+	result := make([]estimate.WindowEstimate, 0, 1+len(window.RecentEpochs))
+	if window.CurrentEpoch != nil {
+		result = append(result, *window.CurrentEpoch)
+	}
+	result = append(result, window.RecentEpochs...)
+	return result
 }
 
 func (s *Service) recentCapacityObservations(

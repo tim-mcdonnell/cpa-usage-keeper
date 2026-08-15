@@ -201,11 +201,18 @@ export function Modal({
 
   useEffect(() => {
     if (!open) return;
-
     previouslyFocusedRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !isVisible) return;
 
     const focusTimer = window.setTimeout(() => {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && modalRef.current?.contains(activeElement)) {
+        return;
+      }
       const firstFocusable = getFocusableElements()[0];
       (firstFocusable ?? closeButtonRef.current ?? modalRef.current)?.focus();
     }, 0);
@@ -213,7 +220,7 @@ export function Modal({
     return () => {
       window.clearTimeout(focusTimer);
     };
-  }, [getFocusableElements, open]);
+  }, [getFocusableElements, isVisible, open]);
 
   useEffect(() => {
     if (open || isVisible) return;
