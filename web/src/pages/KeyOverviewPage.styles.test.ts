@@ -8,7 +8,10 @@ describe('KeyOverviewPage layout', () => {
   it('keeps the viewer page on independent styles while matching the admin overview toolbar structure', () => {
     expect(source).not.toContain('UsagePage.module.scss')
     expect(source).toContain('className={styles.themeSwitcher}')
-    expect(source).toContain('className={styles.logoutSwitcher}')
+    expect(source.match(/<MainActionButton/g)).toHaveLength(2)
+    expect(source).toContain("aria-label={t('common.logout')}")
+    expect(source).not.toContain('styles.logoutSwitcher')
+    expect(source).not.toContain('styles.logoutPill')
     expect(source).not.toContain('check_updates')
     expect(source.indexOf('className={styles.tabBar}')).toBeLessThan(source.indexOf('className={styles.toolbarActionsRight}'))
     expect(source).toContain('<TimeRangeControl')

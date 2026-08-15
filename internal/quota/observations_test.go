@@ -75,7 +75,6 @@ func TestQuotaObservationPreservesRawValuesAndCredentialIncarnation(t *testing.T
 		Key:               "rate_limit.primary_window",
 		StableLimitID:     "rate_limit",
 		Scope:             "window",
-		PlanType:          "plus",
 		Used:              float64Pointer(10),
 		Limit:             float64Pointer(100),
 		Remaining:         float64Pointer(90),
@@ -89,7 +88,8 @@ func TestQuotaObservationPreservesRawValuesAndCredentialIncarnation(t *testing.T
 		WindowUsageCost:   float64Pointer(4.5),
 		Window:            &QuotaWindow{Seconds: int64Pointer(18000)},
 	}
-	reading := newQuotaReading(identity, "codex", RefreshSourceManual, observedAt, []QuotaRow{row})
+	subscription := &SubscriptionInfo{Provider: "codex", Plan: "plus"}
+	reading := newQuotaReading(identity, "codex", RefreshSourceManual, observedAt, subscription, []QuotaRow{row})
 	observation := newQuotaObservation(reading, "oauth", reading.rows[0])
 
 	if observation.AccountID == nil || *observation.AccountID != accountID ||
@@ -137,16 +137,19 @@ func TestQuotaReadingOwnsAnImmutableDeepCopy(t *testing.T) {
 		UsedPercent:   &usedPercent,
 		Window:        &QuotaWindow{Seconds: &windowSeconds},
 	}}
+	subscription := &SubscriptionInfo{Provider: "claude", Plan: "plan-before"}
 
-	reading := newQuotaReading(identity, "claude", RefreshSourceManual, time.Now(), rows)
+	reading := newQuotaReading(identity, "claude", RefreshSourceManual, time.Now(), subscription, rows)
 	accountID = "account-after"
 	planType = "plan-after"
 	usedPercent = 99
 	windowSeconds = 1
 	rows[0].Key = "changed"
+	subscription.Plan = "plan-after"
 
 	if reading.identity.AccountID == nil || *reading.identity.AccountID != "account-before" ||
 		reading.identity.PlanType == nil || *reading.identity.PlanType != "plan-before" ||
+		reading.subscription == nil || reading.subscription.Plan != "plan-before" ||
 		reading.rows[0].Key != "five_hour" ||
 		reading.rows[0].UsedPercent == nil || *reading.rows[0].UsedPercent != 10 ||
 		reading.rows[0].Window == nil || reading.rows[0].Window.Seconds == nil || *reading.rows[0].Window.Seconds != 18000 {
@@ -167,6 +170,7 @@ func TestQuotaHeaderReadingPreservesTriggeringEventKeyAndSource(t *testing.T) {
 		observedAt,
 		42,
 		" trigger-event ",
+		&SubscriptionInfo{Provider: "codex", Plan: "plus"},
 		[]QuotaRow{{
 			Key:           "rate_limit.primary_window",
 			StableLimitID: "rate_limit",
@@ -317,12 +321,12 @@ func TestParsedQuotaRowsDistinguishMissingFromReportedZero(t *testing.T) {
 	if len(kimiRows) != 3 ||
 		kimiRows[0].Used == nil ||
 		*kimiRows[0].Used != 0 ||
-		kimiRows[0].Limit == nil ||
-		kimiRows[0].Remaining == nil ||
-		kimiRows[1].Used == nil ||
-		*kimiRows[1].Used != 0 ||
-		kimiRows[1].Limit != nil ||
-		kimiRows[2].Used != nil {
+		kimiRows[0].Limit != nil ||
+		kimiRows[1].Used != nil ||
+		kimiRows[2].Used == nil ||
+		*kimiRows[2].Used != 0 ||
+		kimiRows[2].Limit == nil ||
+		kimiRows[2].Remaining == nil {
 		t.Fatalf("Kimi missing/zero provenance was not preserved: %+v", kimiRows)
 	}
 
@@ -829,6 +833,7 @@ func quotaObservationTestReading(observedAt time.Time, resetAt time.Time, usedPe
 		"codex",
 		RefreshSourceManual,
 		observedAt,
+		nil,
 		[]QuotaRow{{
 			Key:           "rate_limit.primary_window",
 			StableLimitID: "rate_limit",

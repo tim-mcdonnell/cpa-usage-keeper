@@ -322,6 +322,9 @@ func TestRetentionDeletesOnlyOldAppLogs(t *testing.T) {
 		t.Fatalf("newDailyFileWriter returned error: %v", err)
 	}
 	defer writer.Close()
+	if err := writer.Maintain(); err != nil {
+		t.Fatalf("maintain daily log files: %v", err)
+	}
 
 	if _, err := os.Stat(oldAppLog); !os.IsNotExist(err) {
 		t.Fatalf("expected old app log to be removed, stat err=%v", err)

@@ -319,9 +319,17 @@ describe('PriceRulesModal', () => {
 
 	const helpButton = document.body.querySelector<HTMLButtonElement>('[aria-label="How pricing rules work"]')
 	expect(helpButton).not.toBeNull()
+	expect(helpButton?.textContent).toBe('?')
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*display:\s*inline-grid;/)
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*width:\s*18px;/)
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*height:\s*18px;/)
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*background:\s*var\(--bg-secondary\);/)
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*font-size:\s*11px;/)
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*font-weight:\s*750;/)
+	expect(modalStylesSource).toMatch(/\.helpButton\s*\{[\s\S]*cursor:\s*default;/)
 	helpButton!.getBoundingClientRect = () => ({
-	  x: 280, y: 160, left: 280, top: 160, right: 306, bottom: 186,
-	  width: 26, height: 26, toJSON: () => ({}),
+	  x: 280, y: 160, left: 280, top: 160, right: 298, bottom: 178,
+	  width: 18, height: 18, toJSON: () => ({}),
 	})
 	await act(async () => helpButton!.focus())
 	const describedBy = helpButton?.getAttribute('aria-describedby')

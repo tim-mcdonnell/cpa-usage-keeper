@@ -2,7 +2,9 @@
 @use '../styles/mixins' as *;
 
 .pageShell {
-  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
   background:
     radial-gradient(1200px 520px at 12% -8%, rgba($primary-color, 0.12), transparent 58%),
     radial-gradient(880px 480px at 100% 0%, rgba(0, 0, 0, 0.06), transparent 52%),
@@ -17,6 +19,7 @@
 .pageFrame {
   width: min(var(--keeper-page-max-width, 1245px), 100%);
   margin: 0 auto;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: var(--keeper-page-frame-gap, 18px);
@@ -58,19 +61,14 @@
   align-items: center;
   justify-content: center;
   min-height: var(--keeper-toolbar-control-height, 42px);
-  padding: 0 20px;
-  border-radius: 999px;
-  border: 1px solid rgba($primary-color, 0.24);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--bg-primary) 94%, rgba($primary-color, 0.06)), color-mix(in srgb, var(--bg-secondary) 82%, transparent)),
-    var(--bg-secondary);
-  box-shadow:
-    0 8px 20px rgba(0, 0, 0, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.05) inset;
-  color: color-mix(in srgb, var(--text-primary) 88%, var(--primary-color));
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  padding: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -88,9 +86,7 @@
 }
 
 .identityChip,
-.themeSwitcher,
-.logoutSwitcher,
-.refreshSwitcher {
+.themeSwitcher {
   display: inline-flex;
   align-items: stretch;
   min-height: var(--keeper-toolbar-control-height, 42px);
@@ -125,9 +121,7 @@
   white-space: nowrap;
 }
 
-.themePill,
-.logoutPill,
-.refreshPill {
+.themePill {
   border: 0;
   background: transparent;
   color: var(--text-secondary);
@@ -154,27 +148,12 @@
   }
 }
 
-.themePillActive,
-.logoutPillActive,
-.refreshPillActive,
-.refreshPillLoading {
+.themePillActive {
   background: var(--bg-primary);
   color: var(--text-primary);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
 }
 
-.logoutPill {
-  font-weight: 700;
-}
-
-.logoutPillInner,
-.refreshPillInner {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.refreshSpinner,
 .loadingOverlaySpinner {
   width: 12px;
   height: 12px;
@@ -185,16 +164,25 @@
 
 .contentColumn {
   width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .container {
   width: 100%;
   min-height: 100%;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
   position: relative;
   padding: 8px 0 0;
+}
+
+.container > :last-child {
+  flex: 1 0 auto;
 }
 
 .toolbarRow {
@@ -344,11 +332,11 @@
 
   .usageRefreshSlot,
   .usageFilterActions,
-  .refreshSwitcher {
+  .refreshMainActionShell {
     width: 100%;
   }
 
-  .refreshPill {
+  .refreshMainActionButton {
     width: 100%;
   }
 }

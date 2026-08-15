@@ -1,8 +1,82 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageTabOptions, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration } from '../UsagePage';
+import { appendUniqueUsageEvents, getBackToCPALinkURL, getCredentialSectionVisibility, getOverviewDisplayLoading, getUsageCustomRangeForTab, getUsageTabOptions, handleUsageEventLoadMoreError, isUsagePageVisible, loadAnalysisSections, loadRequestEventsPreferences, loadUsagePageVersionInfo, normalizeRequestEventsPreferences, normalizeUsageTabValue, refreshPageData, REQUEST_EVENTS_PREFERENCES_STORAGE_KEY, runUsageEventRequestLogDownload, sanitizeRequestEventFilters, saveRequestEventsPreferences, scheduleOverviewAutoRefresh, shouldAutoRefreshUsageTab, shouldShowApiKeyFilter, shouldShowRangeControls, shouldShowUpdateCheckButton, getUpdateCheckToastDuration } from '../UsagePage';
 import { REQUEST_EVENT_COLUMN_IDS } from '@/components/usage/RequestEventsDetailsCard';
 import { ApiError } from '@/lib/api';
 import type { UsageFilterWindow, VersionResponse } from '@/lib/types';
+
+describe('appendUniqueUsageEvents', () => {
+  it('appends cursor batches without duplicating overlapping event ids', () => {
+    const current = [
+      { id: '3', timestamp: '2026-07-11T10:00:03Z', model: 'm3', source: 's', failed: false, latency_ms: 1, tokens: { input_tokens: 1, output_tokens: 0, reasoning_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 1 } },
+      { id: '2', timestamp: '2026-07-11T10:00:02Z', model: 'm2', source: 's', failed: false, latency_ms: 1, tokens: { input_tokens: 1, output_tokens: 0, reasoning_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 1 } },
+    ];
+    const incoming = [
+      current[1],
+      { ...current[1], id: '1', timestamp: '2026-07-11T10:00:01Z', model: 'm1' },
+    ];
+
+    expect(appendUniqueUsageEvents(current, incoming).map((event) => event.id)).toEqual(['3', '2', '1']);
+  });
+});
+
+describe('handleUsageEventLoadMoreError', () => {
+  it('pauses automatic loading and surfaces ordinary errors', () => {
+    const pauseAutoLoadMore = vi.fn();
+    const recoverRangeBoundsConflict = vi.fn(() => false);
+    const setError = vi.fn();
+
+    handleUsageEventLoadMoreError({
+      error: new Error('cursor failed'),
+      pauseAutoLoadMore,
+      recoverRangeBoundsConflict,
+      setError,
+    });
+
+    expect(pauseAutoLoadMore).toHaveBeenCalledOnce();
+    expect(recoverRangeBoundsConflict).toHaveBeenCalledOnce();
+    expect(setError).toHaveBeenCalledWith('cursor failed');
+  });
+
+  it('recovers range conflicts without surfacing a pagination error', () => {
+    const pauseAutoLoadMore = vi.fn();
+    const recoverRangeBoundsConflict = vi.fn(() => true);
+    const onAuthRequired = vi.fn();
+    const setError = vi.fn();
+    const error = new ApiError('range changed', 409);
+
+    handleUsageEventLoadMoreError({
+      error,
+      pauseAutoLoadMore,
+      recoverRangeBoundsConflict,
+      onAuthRequired,
+      setError,
+    });
+
+    expect(pauseAutoLoadMore).toHaveBeenCalledOnce();
+    expect(recoverRangeBoundsConflict).toHaveBeenCalledWith(error);
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('keeps authentication handling after pausing automatic loading', () => {
+    const pauseAutoLoadMore = vi.fn();
+    const recoverRangeBoundsConflict = vi.fn(() => false);
+    const onAuthRequired = vi.fn();
+    const setError = vi.fn();
+
+    handleUsageEventLoadMoreError({
+      error: new ApiError('unauthorized', 401),
+      pauseAutoLoadMore,
+      recoverRangeBoundsConflict,
+      onAuthRequired,
+      setError,
+    });
+
+    expect(pauseAutoLoadMore).toHaveBeenCalledOnce();
+    expect(onAuthRequired).toHaveBeenCalledOnce();
+    expect(setError).not.toHaveBeenCalled();
+  });
+});
 
 const createAutoRefreshTestDocument = (visibilityState: DocumentVisibilityState = 'visible') => {
   const target = new EventTarget();
@@ -38,6 +112,24 @@ const createMemoryStorage = (seed: Record<string, string> = {}) => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe('UsagePage Request Events custom range', () => {
+  const longRange = { unit: 'day' as const, start: '2025-07-18', end: '2026-07-17' };
+  const options = { nowMs: Date.parse('2026-07-17T07:36:42.000Z'), timeZone: 'Asia/Shanghai' };
+
+  it('clamps Request Events to the most recent 90 calendar days', () => {
+    expect(getUsageCustomRangeForTab('events', longRange, options)).toEqual({
+      unit: 'day',
+      start: '2026-04-19',
+      end: '2026-07-17',
+    });
+  });
+
+  it('keeps the 365-day range available to other usage tabs', () => {
+    expect(getUsageCustomRangeForTab('overview', longRange, options)).toBe(longRange);
+  });
+
 });
 
 describe('UsagePage Overview loading display', () => {
@@ -452,6 +544,7 @@ describe('UsagePage active tab auto-refresh guard', () => {
   it('keeps Overview auto-refresh enabled and does not auto-refresh other tabs', () => {
     expect(shouldAutoRefreshUsageTab({ activeTab: 'overview', eventsPage: 2 })).toBe(true);
     expect(shouldAutoRefreshUsageTab({ activeTab: 'analysis', eventsPage: 1 })).toBe(false);
+    expect(shouldAutoRefreshUsageTab({ activeTab: 'ranking', eventsPage: 1 })).toBe(false);
     expect(shouldAutoRefreshUsageTab({ activeTab: 'settings', eventsPage: 1 })).toBe(false);
   });
 });
@@ -520,10 +613,10 @@ describe('UsagePage request event filters', () => {
 });
 
 describe('UsagePage request event preferences', () => {
-  it('normalizes persisted filters, page size, and visible columns', () => {
+
+  it('normalizes persisted filters and visible columns', () => {
     const preferences = normalizeRequestEventsPreferences({
       version: 1,
-      pageSize: 500,
       filters: {
         model: 'claude-opus',
         source: 'authidx-source-b',
@@ -533,8 +626,7 @@ describe('UsagePage request event preferences', () => {
     });
 
     expect(preferences).toEqual({
-      version: 7,
-      pageSize: 500,
+      version: 8,
       filters: {
         model: 'claude-opus',
         source: 'authidx-source-b',
@@ -548,7 +640,6 @@ describe('UsagePage request event preferences', () => {
   it('falls back safely for damaged persisted request event preferences', () => {
     const preferences = normalizeRequestEventsPreferences({
       version: 1,
-      pageSize: 999,
       filters: {
         model: 42,
         source: '',
@@ -557,7 +648,6 @@ describe('UsagePage request event preferences', () => {
       visibleColumnIds: ['not-a-column'],
     });
 
-    expect(preferences.pageSize).toBe(100);
     expect(preferences.filters).toEqual({
       model: '__all__',
       source: '__all__',
@@ -571,7 +661,6 @@ describe('UsagePage request event preferences', () => {
     const columnIdsWithoutSpeed = REQUEST_EVENT_COLUMN_IDS.filter((columnId) => columnId !== 'speed');
     const preferences = normalizeRequestEventsPreferences({
       version: 1,
-      pageSize: 100,
       visibleColumnIds: columnIdsWithoutSpeed,
     });
 
@@ -602,7 +691,6 @@ describe('UsagePage request event preferences', () => {
     ];
     const preferences = normalizeRequestEventsPreferences({
       version: 1,
-      pageSize: 100,
       visibleColumnIds: legacyFullColumnIds,
     });
 
@@ -614,8 +702,7 @@ describe('UsagePage request event preferences', () => {
     const hiddenSpeedColumnIds = REQUEST_EVENT_COLUMN_IDS.filter((columnId) => columnId !== 'speed');
 
     saveRequestEventsPreferences({
-      version: 7,
-      pageSize: 100,
+      version: 8,
       filters: {
         model: '__all__',
         source: '__all__',
@@ -627,8 +714,7 @@ describe('UsagePage request event preferences', () => {
 
     const stored = JSON.parse(storage.value(REQUEST_EVENTS_PREFERENCES_STORAGE_KEY) ?? '');
     expect(stored).toEqual({
-      version: 7,
-      pageSize: 100,
+      version: 8,
       filters: {
         model: '__all__',
         source: '__all__',
@@ -645,8 +731,7 @@ describe('UsagePage request event preferences', () => {
     const hiddenSpeedModeColumnIds = REQUEST_EVENT_COLUMN_IDS.filter((columnId) => columnId !== 'service_tier');
 
     saveRequestEventsPreferences({
-      version: 7,
-      pageSize: 100,
+      version: 8,
       filters: {
         model: '__all__',
         source: '__all__',
@@ -664,11 +749,14 @@ describe('UsagePage request event preferences', () => {
       [REQUEST_EVENTS_PREFERENCES_STORAGE_KEY]: '{bad json',
     });
 
-    expect(loadRequestEventsPreferences(storage).pageSize).toBe(100);
+    expect(loadRequestEventsPreferences(storage).filters).toEqual({
+      model: '__all__',
+      source: '__all__',
+      result: '__all__',
+    });
 
     saveRequestEventsPreferences({
       version: 4,
-      pageSize: 50,
       filters: {
         model: 'gpt-4.1',
         source: 'source-a',
@@ -679,8 +767,7 @@ describe('UsagePage request event preferences', () => {
 
     expect(storage.setItem).toHaveBeenCalledTimes(1);
     expect(JSON.parse(storage.value(REQUEST_EVENTS_PREFERENCES_STORAGE_KEY) ?? '')).toEqual({
-      version: 7,
-      pageSize: 50,
+      version: 8,
       filters: {
         model: 'gpt-4.1',
         source: 'source-a',
@@ -695,6 +782,7 @@ describe('UsagePage request event preferences', () => {
 for (const [tab, expected] of [
   ['overview', true],
   ['analysis', true],
+  ['ranking', false],
   ['events', true],
   ['auth-files', false],
   ['ai-provider', false],
@@ -708,6 +796,7 @@ for (const [tab, expected] of [
 for (const [tab, expected] of [
   ['overview', true],
   ['analysis', true],
+  ['ranking', false],
   ['events', true],
   ['auth-files', false],
   ['ai-provider', false],
@@ -725,17 +814,28 @@ describe('UsagePage tab labels', () => {
     expect(labels).toEqual([
       'translated:usage_stats.tab_overview',
       'translated:usage_stats.tab_analysis',
+      'translated:usage_stats.tab_ranking',
       'translated:usage_stats.tab_events',
       'translated:usage_stats.tab_auth_files',
       'translated:usage_stats.tab_ai_provider',
       'translated:usage_stats.tab_settings',
     ]);
   });
+
+  it('omits Ranking from the CPAMC embedded navigation', () => {
+    const values = getUsageTabOptions((key) => key, { includeRanking: false }).map((option) => option.value);
+
+    expect(values).toEqual(['overview', 'analysis', 'events', 'auth-files', 'ai-provider', 'settings']);
+  });
 });
 
 describe('UsagePage credentials tab migration', () => {
   it('migrates the legacy Credentials tab value to Auth Files', () => {
     expect(normalizeUsageTabValue('credentials')).toBe('auth-files');
+  });
+
+  it('keeps Ranking as an independent persisted tab value', () => {
+    expect(normalizeUsageTabValue('ranking')).toBe('ranking');
   });
 
   it('keeps each credential section scoped to its own tab', () => {

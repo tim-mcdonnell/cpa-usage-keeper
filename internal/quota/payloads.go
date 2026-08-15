@@ -63,6 +63,20 @@ func parseAntigravityQuotaPayload(response *apicall.Response) (*AntigravityQuota
 	return payload, nil
 }
 
+func parseAntigravitySubscriptionPayload(response *apicall.Response) (*AntigravitySubscriptionPayload, error) {
+	object, err := parseResponseObject(response)
+	if err != nil {
+		return nil, err
+	}
+	if nested := objectField(object, "body"); nested != nil {
+		object = nested
+	}
+	return &AntigravitySubscriptionPayload{
+		CurrentTier: parseGeminiCliUserTier(objectField(object, "currentTier", "current_tier")),
+		PaidTier:    parseGeminiCliUserTier(objectField(object, "paidTier", "paid_tier")),
+	}, nil
+}
+
 func parseCodexUsagePayload(response *apicall.Response) (*CodexUsagePayload, error) {
 	object, err := parseResponseObject(response)
 	if err != nil {
@@ -284,8 +298,8 @@ func parseClaudeProfileAccount(object map[string]json.RawMessage) *ClaudeProfile
 		FullName:     stringField(object, "full_name", "fullName"),
 		DisplayName:  stringField(object, "display_name", "displayName"),
 		Email:        stringField(object, "email"),
-		HasClaudeMax: boolField(object, "has_claude_max", "hasClaudeMax"),
-		HasClaudePro: boolField(object, "has_claude_pro", "hasClaudePro"),
+		HasClaudeMax: boolPtrField(object, "has_claude_max", "hasClaudeMax"),
+		HasClaudePro: boolPtrField(object, "has_claude_pro", "hasClaudePro"),
 	}
 }
 
@@ -467,28 +481,32 @@ func parseKimiUsageDetail(object map[string]json.RawMessage) *KimiUsageDetail {
 	if object == nil {
 		return nil
 	}
+	used, hasUsed := floatValue(object, "used")
+	limit, hasLimit := floatValue(object, "limit")
+	remaining, hasRemaining := floatValue(object, "remaining")
+	usedDerived := false
+	// Kimi 省略 used 时按 provider 的 limit - remaining 关系补齐展示值，同时保留 raw presence 供 observation 只存事实。
+	if !hasUsed && hasLimit && hasRemaining {
+		used = limit - remaining
+		usedDerived = true
+	}
 	detail := &KimiUsageDetail{
+		Used:             used,
+		Limit:            limit,
+		Remaining:        remaining,
 		Name:             stringField(object, "name"),
 		Title:            stringField(object, "title"),
 		ResetAt:          stringField(object, "resetAt", "reset_at", "resetTime", "reset_time"),
+		ResetIn:          floatField(object, "resetIn", "reset_in"),
 		TTL:              floatField(object, "ttl"),
 		rawPresenceKnown: true,
+		usedPresent:      hasUsed,
+		usedDerived:      usedDerived,
+		limitPresent:     hasLimit,
+		remainingPresent: hasRemaining,
 		resetAtRaw:       rawScalarField(object, "resetAt", "reset_at", "resetTime", "reset_time"),
 	}
-	if value := floatPtrField(object, "used"); value != nil {
-		detail.Used = *value
-		detail.usedPresent = true
-	}
-	if value := floatPtrField(object, "limit"); value != nil {
-		detail.Limit = *value
-		detail.limitPresent = true
-	}
-	if value := floatPtrField(object, "remaining"); value != nil {
-		detail.Remaining = *value
-		detail.remainingPresent = true
-	}
 	if value := floatPtrField(object, "resetIn", "reset_in"); value != nil {
-		detail.ResetIn = *value
 		detail.resetInPresent = true
 	}
 	return detail
@@ -747,6 +765,9 @@ func boolField(object map[string]json.RawMessage, keys ...string) bool {
 func boolPtrField(object map[string]json.RawMessage, keys ...string) *bool {
 	for _, key := range keys {
 		if raw, ok := object[key]; ok {
+			if rawJSONNull(raw) {
+				continue
+			}
 			var value bool
 			if err := json.Unmarshal(raw, &value); err == nil {
 				return &value

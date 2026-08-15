@@ -11,6 +11,9 @@ type UsageEvent struct {
 	Endpoint            string    `gorm:"column:endpoint"`
 	AuthType            string    `gorm:"column:auth_type;index:idx_usage_events_auth_type_auth_index_id,priority:1"`
 	RequestID           string    `gorm:"column:request_id"`
+	ClientIP            *string   `gorm:"column:client_ip"`
+	XForwardedFor       *string   `gorm:"column:x_forwarded_for"`
+	UserAgent           *string   `gorm:"column:user_agent"`
 	Model               string    `gorm:"index:idx_usage_events_model"`
 	ModelAlias          *string   `gorm:"column:model_alias"`
 	ReasoningEffort     string    `gorm:"column:reasoning_effort;not null;default:''"`

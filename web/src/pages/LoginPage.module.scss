@@ -77,10 +77,15 @@
 }
 
 .brandBlock {
+  transform: translateY(-50px);
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+
+  @include mobile {
+    transform: none;
+  }
 }
 
 .eyebrow {
@@ -88,12 +93,12 @@
   align-items: center;
   width: fit-content;
   min-height: 40px;
-  padding: 0 18px;
-  border-radius: 999px;
-  border: 1px solid rgba($primary-color, 0.24);
-  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  padding: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: 20px;
   font-weight: 900;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -101,18 +106,22 @@
 
 .title {
   margin: 0;
-  font-size: clamp(38px, 5.6vw, 68px);
+  font-size: 60px;
   line-height: 0.92;
   letter-spacing: -0.055em;
   white-space: pre-line;
   color: var(--text-primary);
+
+  @include mobile {
+    font-size: 38px;
+  }
 }
 
 .subtitle {
   margin: 0;
   max-width: 560px;
   color: var(--text-secondary);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.75;
 }
 

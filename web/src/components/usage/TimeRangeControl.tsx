@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { UsageCustomRange, UsageTimeRange } from '@/lib/types';
 import { Modal } from '@/components/ui/Modal';
 import { IconChevronDown, IconTimer } from '@/components/ui/icons';
-import { formatCustomRangeLabel, normalizeCustomRange } from '@/utils/usage/customRange';
+import { DEFAULT_CUSTOM_DAY_RANGE_MAX_DAYS, formatCustomRangeLabel, normalizeCustomRange } from '@/utils/usage/customRange';
 import {
   buildRollingUsageRange,
   parseSelectableUsageRange,
@@ -81,6 +81,7 @@ interface RangePanelProps {
   customAnchorMs: number;
   timeZone: string;
   customEnabled: boolean;
+  maxCustomDayRangeDays: number;
   locale?: string;
   onModeChange: (mode: UsageTimeRangeMode) => void;
   onRollingValueChange: (unit: RollingUnit, value: number) => void;
@@ -98,6 +99,7 @@ function TimeRangePanel({
   customAnchorMs,
   timeZone,
   customEnabled,
+  maxCustomDayRangeDays,
   locale,
   onModeChange,
   onRollingValueChange,
@@ -214,6 +216,7 @@ function TimeRangePanel({
           timeZone={timeZone}
           locale={locale}
           anchorMs={customAnchorMs}
+          maxDayRangeDays={maxCustomDayRangeDays}
           onChange={onCustomRangeChange}
           onApply={onCustomApply}
           onCancel={onCustomCancel}
@@ -237,9 +240,17 @@ interface TimeRangeControlProps {
   onChange: (value: UsageTimeRange, customRange?: UsageCustomRange) => void;
   ariaLabel: string;
   timeZone?: string;
+  maxCustomDayRangeDays?: number;
 }
 
-export function TimeRangeControl({ value, customRange, onChange, ariaLabel, timeZone: providedTimeZone }: TimeRangeControlProps) {
+export function TimeRangeControl({
+  value,
+  customRange,
+  onChange,
+  ariaLabel,
+  timeZone: providedTimeZone,
+  maxCustomDayRangeDays = DEFAULT_CUSTOM_DAY_RANGE_MAX_DAYS,
+}: TimeRangeControlProps) {
   const { t, i18n } = useTranslation();
   const timeZone = providedTimeZone?.trim() || 'UTC';
   const customEnabled = Boolean(providedTimeZone?.trim());
@@ -251,6 +262,7 @@ export function TimeRangeControl({ value, customRange, onChange, ariaLabel, time
   const [customDraft, setCustomDraft] = useState<UsageCustomRange>(() => normalizeCustomRange(customRange, {
     nowMs: customAnchorMs,
     timeZone,
+    maxDayRangeDays: maxCustomDayRangeDays,
   }));
   const [rollingValues, setRollingValues] = useState<Record<RollingUnit, number>>(() => ({
     ...DEFAULT_ROLLING_VALUES,
@@ -261,6 +273,7 @@ export function TimeRangeControl({ value, customRange, onChange, ariaLabel, time
   const [mobileOpen, setMobileOpen] = useState(false);
   const [popoverPosition, setPopoverPosition] = useState({ top: 0, left: 0 });
   const [previousAppliedMode, setPreviousAppliedMode] = useState(appliedMode);
+  const [previousMaxCustomDayRangeDays, setPreviousMaxCustomDayRangeDays] = useState(maxCustomDayRangeDays);
   const desktopTriggerRef = useRef<HTMLButtonElement | null>(null);
   const desktopPopoverRef = useRef<HTMLDivElement | null>(null);
   const mobileOpenRef = useRef(false);
@@ -268,10 +281,15 @@ export function TimeRangeControl({ value, customRange, onChange, ariaLabel, time
   const latestRollingValuesRef = useRef(rollingValues);
   const activeRollingPointerRef = useRef<{ unit: RollingUnit; pointerId: number } | null>(null);
 
-  if (previousAppliedMode !== appliedMode) {
+  if (previousAppliedMode !== appliedMode || previousMaxCustomDayRangeDays !== maxCustomDayRangeDays) {
     setPreviousAppliedMode(appliedMode);
-    if (appliedMode === 'custom' && previousAppliedMode !== 'custom') {
-      setCustomDraft(normalizeCustomRange(customRange, { nowMs: customAnchorMs, timeZone }));
+    setPreviousMaxCustomDayRangeDays(maxCustomDayRangeDays);
+    if (appliedMode === 'custom') {
+      setCustomDraft(normalizeCustomRange(customRange, {
+        nowMs: customAnchorMs,
+        timeZone,
+        maxDayRangeDays: maxCustomDayRangeDays,
+      }));
     }
   }
 
@@ -304,8 +322,12 @@ export function TimeRangeControl({ value, customRange, onChange, ariaLabel, time
   const prepareCustomDraft = useCallback(() => {
     const anchorMs = Date.now();
     setCustomAnchorMs(anchorMs);
-    setCustomDraft(normalizeCustomRange(customRange, { nowMs: anchorMs, timeZone }));
-  }, [customRange, timeZone]);
+    setCustomDraft(normalizeCustomRange(customRange, {
+      nowMs: anchorMs,
+      timeZone,
+      maxDayRangeDays: maxCustomDayRangeDays,
+    }));
+  }, [customRange, maxCustomDayRangeDays, timeZone]);
 
   const handleModeChange = (nextMode: UsageTimeRangeMode) => {
     if (appliedMode === 'hour' || appliedMode === 'day') {
@@ -383,14 +405,18 @@ export function TimeRangeControl({ value, customRange, onChange, ariaLabel, time
     setDraftingUnit(null);
     setPendingMode(null);
     if (appliedMode === 'custom') {
-      setCustomDraft(normalizeCustomRange(customRange, { nowMs: customAnchorMs, timeZone }));
+      setCustomDraft(normalizeCustomRange(customRange, {
+        nowMs: customAnchorMs,
+        timeZone,
+        maxDayRangeDays: maxCustomDayRangeDays,
+      }));
       return;
     }
     if (appliedMode !== 'hour' && appliedMode !== 'day') return;
     const appliedValue = parsedRange.value ?? DEFAULT_ROLLING_VALUES[appliedMode];
     latestRollingValuesRef.current = { ...latestRollingValuesRef.current, [appliedMode]: appliedValue };
     setRollingValues((current) => current[appliedMode] === appliedValue ? current : { ...current, [appliedMode]: appliedValue });
-  }, [appliedMode, customAnchorMs, customRange, parsedRange.value, timeZone]);
+  }, [appliedMode, customAnchorMs, customRange, maxCustomDayRangeDays, parsedRange.value, timeZone]);
 
   const closeDesktopPopover = useCallback((restoreFocus = false) => {
     discardDraft();
@@ -521,6 +547,7 @@ export function TimeRangeControl({ value, customRange, onChange, ariaLabel, time
       customAnchorMs={customAnchorMs}
       timeZone={timeZone}
       customEnabled={customEnabled}
+      maxCustomDayRangeDays={maxCustomDayRangeDays}
       locale={i18n?.language}
       onModeChange={handleModeChange}
       onRollingValueChange={handleRollingValueChange}

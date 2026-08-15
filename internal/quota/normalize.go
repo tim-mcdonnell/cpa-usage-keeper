@@ -181,11 +181,6 @@ func normalizeCodexQuotaRows(result CodexResult) []QuotaRow {
 		secondaryLabel := additional.LimitName + " Weekly"
 		rows = appendCodexWindowQuotaRows(rows, "additional_rate_limits."+additional.LimitName, primaryLabel, secondaryLabel, "additional", metric, additional.RateLimit)
 	}
-	if planType := strings.TrimSpace(result.Usage.PlanType); planType != "" {
-		for index := range rows {
-			rows[index].PlanType = planType
-		}
-	}
 	return rows
 }
 
@@ -459,21 +454,34 @@ func antigravityQuotaWindowOrder(metric string) int {
 }
 
 func normalizeKimiQuotaRows(result KimiResult) []QuotaRow {
-	// Kimi 的 summary 和 limits 结构不同，先保留 summary，再逐条展开 limits。
+	// Kimi 的短窗口位于 limits，顶层 usage 是较长的汇总窗口；按短窗口到长窗口输出。
 	if result.Usage == nil {
 		return nil
 	}
 	rows := make([]QuotaRow, 0, 1+len(result.Usage.Limits))
-	if isMeaningfulKimiDetail(result.Usage.Usage) {
-		rows = append(rows, kimiDetailQuotaRow("usage", "summary", "Usage", result.Usage.Usage))
-	}
 	for index, limit := range result.Usage.Limits {
 		keyName := limit.Name
 		if keyName == "" {
 			keyName = fmt.Sprintf("%d", index)
 		}
-		label := firstNonEmpty(limit.Title, limit.Name, "Limit")
+		window := kimiWindow(limit)
+		label := kimiLimitLabel(limit, window)
 		scope := firstNonEmpty(limit.Scope, "limit")
+		used, quotaLimit, remaining := limit.Used, limit.Limit, limit.Remaining
+		usedPresent := !limit.rawPresenceKnown || limit.usedPresent
+		limitPresent := !limit.rawPresenceKnown || limit.limitPresent
+		remainingPresent := !limit.rawPresenceKnown || limit.remainingPresent
+		usedDerived := false
+		// 新协议把额度值放在 detail；旧协议只把 reset 信息放在 detail，额度仍在外层。
+		if hasKimiQuotaValues(limit.Detail) {
+			used = limit.Detail.Used
+			quotaLimit = limit.Detail.Limit
+			remaining = limit.Detail.Remaining
+			usedPresent = !limit.Detail.rawPresenceKnown || limit.Detail.usedPresent || limit.Detail.usedDerived
+			limitPresent = !limit.Detail.rawPresenceKnown || limit.Detail.limitPresent
+			remainingPresent = !limit.Detail.rawPresenceKnown || limit.Detail.remainingPresent
+			usedDerived = limit.Detail.usedDerived
+		}
 		row := QuotaRow{
 			Key:           "limits." + keyName,
 			StableLimitID: limit.Name,
@@ -482,21 +490,22 @@ func normalizeKimiQuotaRows(result KimiResult) []QuotaRow {
 			Metric:        limit.Name,
 			ResetAt:       firstNonEmpty(limit.ResetAt, resetAtFromKimiDetail(limit.Detail)),
 		}
-		if !limit.rawPresenceKnown || limit.usedPresent {
-			row.Used = floatPtr(limit.Used)
+		if usedPresent {
+			row.Used = floatPtr(used)
+			row.UsedDerived = usedDerived
 		}
-		if !limit.rawPresenceKnown || limit.limitPresent {
-			row.Limit = floatPtr(limit.Limit)
+		if limitPresent {
+			row.Limit = floatPtr(quotaLimit)
 		}
-		if !limit.rawPresenceKnown || limit.remainingPresent {
-			row.Remaining = floatPtr(limit.Remaining)
+		if remainingPresent {
+			row.Remaining = floatPtr(remaining)
 		}
 		row.ResetRaw = limit.ResetAt
 		if limit.rawPresenceKnown {
 			row.ResetRaw = limit.resetAtRaw
 		}
 		if row.Limit != nil && *row.Limit > 0 && row.Used != nil {
-			row.UsedPercent = floatPtr(limit.Used / limit.Limit * 100)
+			row.UsedPercent = floatPtr(*row.Used / *row.Limit * 100)
 			row.PercentSource = QuotaPercentSourceUsedLimit
 		}
 		if limit.ResetIn != 0 || (limit.rawPresenceKnown && limit.resetInPresent) {
@@ -504,8 +513,11 @@ func normalizeKimiQuotaRows(result KimiResult) []QuotaRow {
 		} else if limit.Detail != nil && (limit.Detail.ResetIn != 0 || (limit.Detail.rawPresenceKnown && limit.Detail.resetInPresent)) {
 			row.ResetAfterSeconds = intPtr(int64(limit.Detail.ResetIn))
 		}
-		row.Window = kimiWindow(limit)
+		row.Window = window
 		rows = append(rows, row)
+	}
+	if isMeaningfulKimiDetail(result.Usage.Usage) {
+		rows = append(rows, kimiDetailQuotaRow("usage", "summary", "Weekly", result.Usage.Usage))
 	}
 	return rows
 }
@@ -537,7 +549,7 @@ func xaiWeeklyQuotaRow(config *XAIBillingConfig) (QuotaRow, bool) {
 	usedPercent := *config.CreditUsagePercent
 	limitReached := usedPercent >= 100
 	row := QuotaRow{
-		Key:           "billing.weekly",
+		Key:           xaiWeeklyBillingQuotaKey,
 		StableLimitID: "weekly",
 		Label:         "Weekly",
 		Scope:         "billing",
@@ -716,8 +728,9 @@ func kimiDetailQuotaRow(key string, scope string, fallbackLabel string, detail *
 		Metric:        detail.Name,
 		ResetAt:       detail.ResetAt,
 	}
-	if !detail.rawPresenceKnown || detail.usedPresent {
+	if !detail.rawPresenceKnown || detail.usedPresent || detail.usedDerived {
 		row.Used = floatPtr(detail.Used)
+		row.UsedDerived = detail.usedDerived
 	}
 	if !detail.rawPresenceKnown || detail.limitPresent {
 		row.Limit = floatPtr(detail.Limit)
@@ -749,6 +762,11 @@ func isMeaningfulKimiDetail(detail *KimiUsageDetail) bool {
 		detail.ResetIn != 0 || detail.resetInPresent || detail.TTL != 0
 }
 
+func hasKimiQuotaValues(detail *KimiUsageDetail) bool {
+	return detail != nil && (detail.Used != 0 || detail.Limit != 0 || detail.Remaining != 0 ||
+		detail.usedPresent || detail.usedDerived || detail.limitPresent || detail.remainingPresent)
+}
+
 func resetAtFromKimiDetail(detail *KimiUsageDetail) string {
 	if detail == nil {
 		return ""
@@ -766,10 +784,24 @@ func kimiWindow(limit KimiLimitItem) *QuotaWindow {
 	return nil
 }
 
+func kimiLimitLabel(limit KimiLimitItem, window *QuotaWindow) string {
+	if label := firstNonEmpty(limit.Title, limit.Name); label != "" {
+		return label
+	}
+	if window != nil && window.Seconds != nil {
+		switch *window.Seconds {
+		case quotaWindowFiveHourSeconds:
+			return "5h"
+		}
+	}
+	return "Limit"
+}
+
 func quotaWindowFromDurationUnit(duration int64, unit string) *QuotaWindow {
 	window := &QuotaWindow{Duration: floatPtr(float64(duration)), Unit: unit}
 	// Kimi 返回显式 duration/unit 时才换算 seconds；未知单位保留原字段但不参与窗口用量统计。
-	switch strings.ToLower(strings.TrimSpace(unit)) {
+	normalizedUnit := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(unit)), "time_unit_")
+	switch normalizedUnit {
 	case "second", "seconds", "s":
 		window.Seconds = intPtr(int64(duration))
 	case "minute", "minutes", "m":

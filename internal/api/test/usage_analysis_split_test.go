@@ -126,7 +126,7 @@ func TestUsageAnalysisAcceptsCustomDayRangeOlderThanThirtyDays(t *testing.T) {
 	}
 }
 
-func TestUsageAnalysisLatencyReturnsUnsupportedOutsideRecentThirtyDays(t *testing.T) {
+func TestUsageAnalysisLatencyOlderThanThirtyDaysStillCallsProvider(t *testing.T) {
 	today := analysisLocalToday()
 	historicalDay := today.AddDate(0, 0, -120)
 	provider := &analysisSplitStub{latency: &servicedto.AnalysisLatencyDiagnostics{}}
@@ -135,14 +135,42 @@ func TestUsageAnalysisLatencyReturnsUnsupportedOutsideRecentThirtyDays(t *testin
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, analysisCustomDayURL("/api/v1/usage/analysis/latency", historicalDay, historicalDay), nil))
 
 	if response.Code != http.StatusOK {
-		t.Fatalf("expected unsupported latency range to return 200, got %d: %s", response.Code, response.Body.String())
+		t.Fatalf("expected historical latency range to return 200, got %d: %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `"supported":false`) || !strings.Contains(body, `"unsupported_reason":"range_outside_recent_30_days"`) {
-		t.Fatalf("expected structured unsupported latency response, got %s", body)
+	if !strings.Contains(body, `"supported":true`) || strings.Contains(body, `"unsupported_reason"`) {
+		t.Fatalf("expected historical latency range to stay supported, got %s", body)
 	}
-	if provider.latencyCalls != 0 {
-		t.Fatalf("expected unsupported latency range not to reach provider, got %d calls", provider.latencyCalls)
+	if provider.latencyCalls != 1 || provider.latencyFilter.RangeCount != 1 || provider.latencyFilter.CustomUnit != "day" {
+		t.Fatalf("expected historical latency range to reach provider once, got calls=%d filter=%+v", provider.latencyCalls, provider.latencyFilter)
+	}
+}
+
+func TestUsageAnalysisLatencySupportsThreeHundredSixtyFiveDaysAndRejectsThreeHundredSixtySix(t *testing.T) {
+	today := analysisLocalToday()
+	provider := &analysisSplitStub{latency: &servicedto.AnalysisLatencyDiagnostics{}}
+	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
+
+	supportedResponse := httptest.NewRecorder()
+	router.ServeHTTP(supportedResponse, httptest.NewRequest(http.MethodGet, analysisCustomDayURL(
+		"/api/v1/usage/analysis/latency", today.AddDate(0, 0, -364), today,
+	), nil))
+	if supportedResponse.Code != http.StatusOK {
+		t.Fatalf("expected 365-day latency range to return 200, got %d: %s", supportedResponse.Code, supportedResponse.Body.String())
+	}
+	if !strings.Contains(supportedResponse.Body.String(), `"supported":true`) || provider.latencyCalls != 1 || provider.latencyFilter.RangeCount != 365 {
+		t.Fatalf("expected 365-day latency provider call, calls=%d filter=%+v body=%s", provider.latencyCalls, provider.latencyFilter, supportedResponse.Body.String())
+	}
+
+	rejectedResponse := httptest.NewRecorder()
+	router.ServeHTTP(rejectedResponse, httptest.NewRequest(http.MethodGet, analysisCustomDayURL(
+		"/api/v1/usage/analysis/latency", today.AddDate(0, 0, -365), today,
+	), nil))
+	if rejectedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("expected 366-day latency range to be rejected by the shared parser, got %d: %s", rejectedResponse.Code, rejectedResponse.Body.String())
+	}
+	if provider.latencyCalls != 1 {
+		t.Fatalf("expected rejected 366-day range not to call provider, got %d calls", provider.latencyCalls)
 	}
 }
 

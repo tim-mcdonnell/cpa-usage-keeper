@@ -41,8 +41,12 @@ func TestParseCodexHeaderQuotaParsesPrimarySecondaryAndAdditionalWindows(t *test
 	if len(rows) != 4 {
 		t.Fatalf("expected 4 rows, got %#v", rows)
 	}
-	if rows[0].Key != "rate_limit.primary_window" || rows[0].PlanType != "pro" || rows[0].Window == nil || rows[0].Window.Seconds == nil || *rows[0].Window.Seconds != quotaWindowFiveHourSeconds {
+	if rows[0].Key != "rate_limit.primary_window" || rows[0].Window == nil || rows[0].Window.Seconds == nil || *rows[0].Window.Seconds != quotaWindowFiveHourSeconds {
 		t.Fatalf("unexpected primary row: %#v", rows[0])
+	}
+	subscription := NormalizeSubscription(output)
+	if subscription == nil || subscription.Provider != "codex" || subscription.Plan != "pro-20x" {
+		t.Fatalf("unexpected subscription: %#v", subscription)
 	}
 	if rows[0].UsedPercent == nil || *rows[0].UsedPercent != 4 || rows[0].ResetAfterSeconds == nil || *rows[0].ResetAfterSeconds != 7404 {
 		t.Fatalf("unexpected primary usage fields: %#v", rows[0])

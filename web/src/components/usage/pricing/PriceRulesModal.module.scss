@@ -27,24 +27,27 @@
 }
 
 .helpButton {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 1px solid var(--border-color);
-  border-radius: 999px;
-  background: var(--bg-primary);
+  border-radius: 50%;
   color: var(--text-secondary);
-  cursor: help;
-}
+  background: var(--bg-secondary);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  font-family: inherit;
+  cursor: default;
+  user-select: none;
 
-.helpButton:hover,
-.helpButton:focus-visible {
-  border-color: var(--border-hover);
-  color: var(--text-primary);
-  outline: none;
+  &:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
 }
 
 .helpTooltip {
@@ -151,22 +154,6 @@
   background: color-mix(in srgb, var(--bg-primary) 86%, transparent);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
   font-size: 12px;
-}
-
-.actionButton {
-  min-height: 32px;
-  padding: 7px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-
-  &:global(.btn),
-  &:global(.btn.btn-sm) {
-    min-height: 32px;
-    padding: 7px 12px;
-    border-radius: 999px;
-    font-size: 12px;
-  }
 }
 
 .removeButton {

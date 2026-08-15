@@ -83,8 +83,8 @@ func TestUsageOverviewAggregationSeparatesFiveDimensionCombinations(t *testing.T
 	assertUsageOverviewFiveDimensionRows(t, db, "usage_overview_hourly_stats")
 	assertUsageOverviewFiveDimensionRows(t, db, "usage_overview_daily_stats")
 
-	var checkpoint entities.UsageOverviewAggregationCheckpoint
-	if err := db.Where("name = ?", "overview").Take(&checkpoint).Error; err != nil {
+	var checkpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointOverview).Take(&checkpoint).Error; err != nil {
 		t.Fatalf("load five-dimension checkpoint: %v", err)
 	}
 	if checkpoint.LastAggregatedUsageEventID != 7 {

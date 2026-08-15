@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import { IconCircleHelp } from '@/components/ui/icons'
 import styles from './PriceRulesModal.module.scss'
 
 const VIEWPORT_PADDING = 16
@@ -166,7 +165,7 @@ export function PriceRulesHelp() {
           setTouchOpen(true)
         }}
       >
-        <IconCircleHelp size={15} />
+        ?
       </button>
       {typeof document === 'undefined' ? tooltip : createPortal(tooltip, document.body)}
     </span>

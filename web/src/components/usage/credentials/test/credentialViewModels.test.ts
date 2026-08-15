@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { UsageIdentity, UsageQuotaCapacityItem, UsageQuotaCheckResponse, UsageQuotaRow, UsageQuotaWindowEstimate } from '@/lib/types'
+import type { UsageIdentity, UsageQuotaCapacityItem, UsageQuotaCheckResponse, UsageQuotaRow, UsageQuotaWindowEstimate, UsageSubscriptionInfo } from '@/lib/types'
 import {
   CREDENTIALS_PAGE_SIZE,
   buildAiProviderCredentialRows,
@@ -10,10 +10,11 @@ import {
 } from '../credentialViewModels'
 
 
-function quotaResponse(authIndex: string, quota: UsageQuotaRow[], rateLimitResetCreditsAvailableCount?: number | null): UsageQuotaCheckResponse {
+function quotaResponse(authIndex: string, quota: UsageQuotaRow[], rateLimitResetCreditsAvailableCount?: number | null, subscription?: UsageSubscriptionInfo): UsageQuotaCheckResponse {
   return {
     id: authIndex,
     quota,
+    subscription,
     rateLimitResetCreditsAvailableCount,
   }
 }
@@ -28,7 +29,7 @@ function identity(overrides: Partial<UsageIdentity>): UsageIdentity {
     type: overrides.type ?? 'claude',
     provider: overrides.provider ?? 'claude',
     priority: overrides.priority,
-    plan_type: overrides.plan_type,
+    subscription: overrides.subscription,
     total_requests: overrides.total_requests ?? 0,
     success_count: overrides.success_count ?? 0,
     failure_count: overrides.failure_count ?? 0,
@@ -111,50 +112,109 @@ describe('credentialViewModels', () => {
     expect(groups.aiProviders.map((item) => item.identity)).toEqual(['api-key'])
   })
 
-  it('builds auth file plan badges from plan type with case-insensitive matching', () => {
+  it('builds auth file subscription badges from canonical Codex identity subscriptions', () => {
     const rows = buildAuthFileCredentialRows([
-      identity({ identity: 'free-auth', plan_type: 'free' }),
-      identity({ identity: 'team-auth', plan_type: 'TEAM' }),
-      identity({ identity: 'plus-auth', plan_type: 'Plus' }),
-      identity({ identity: 'pro-auth', plan_type: 'chatgpt-pro-monthly' }),
+      identity({ identity: 'free-auth', subscription: { provider: 'codex', plan: 'free' } }),
+      identity({ identity: 'team-auth', subscription: { provider: 'CODEX', plan: 'TEAM' } }),
+      identity({ identity: 'plus-auth', subscription: { provider: 'codex', plan: 'Plus' } }),
+      identity({ identity: 'pro-lite-auth', subscription: { provider: 'codex', plan: 'pro-5x' } }),
+      identity({ identity: 'pro-auth', subscription: { provider: 'codex', plan: 'pro-20x' } }),
+      identity({ identity: 'enterprise-auth', subscription: { provider: 'codex', plan: 'ENTERPRISE' } }),
+      identity({ identity: 'unknown-pro-auth', subscription: { provider: 'codex', plan: 'ChatGPT-Pro-Monthly' } }),
     ])
 
-    expect(rows.map((row) => [row.planTypeLabel, row.planTypeTone])).toEqual([
-      ['Free', 'free'],
-      ['Team', 'team'],
-      ['Plus', 'plus'],
-      ['Pro', 'pro'],
+    expect(rows.map((row) => row.subscriptionBadge)).toEqual([
+      { kind: 'codex-free', labelKey: 'usage_stats.credentials_subscription_codex_free' },
+      { kind: 'codex-team', labelKey: 'usage_stats.credentials_subscription_codex_team' },
+      { kind: 'codex-plus', labelKey: 'usage_stats.credentials_subscription_codex_plus' },
+      { kind: 'codex-pro5x', labelKey: 'usage_stats.credentials_subscription_codex_pro_5x' },
+      { kind: 'codex-pro20x', labelKey: 'usage_stats.credentials_subscription_codex_pro_20x' },
+      { kind: 'codex-enterprise', labelKey: 'usage_stats.credentials_subscription_codex_enterprise' },
+      { kind: 'codex-unknown', fallbackLabel: 'ChatGPT-Pro-Monthly' },
     ])
   })
 
-  it('prefers refreshed quota plan type over usage identity plan type', () => {
+  it('builds Claude subscription badges from refreshed quota responses', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['free-auth', quotaResponse('free-auth', [], undefined, { provider: 'claude', plan: 'free' })],
+      ['pro-auth', quotaResponse('pro-auth', [], undefined, { provider: 'claude', plan: 'pro' })],
+      ['max-auth', quotaResponse('max-auth', [], undefined, { provider: 'claude', plan: 'max' })],
+      ['team-auth', quotaResponse('team-auth', [], undefined, { provider: 'claude', plan: 'team' })],
+    ])
+
+    const rows = buildAuthFileCredentialRows([
+      identity({ identity: 'free-auth', provider: 'claude' }),
+      identity({ identity: 'pro-auth', provider: 'claude' }),
+      identity({ identity: 'max-auth', provider: 'claude' }),
+      identity({ identity: 'team-auth', provider: 'claude' }),
+    ], quotas)
+
+    expect(rows.map((row) => row.subscriptionBadge)).toEqual([
+      { kind: 'claude-free', labelKey: 'usage_stats.credentials_subscription_claude_free' },
+      { kind: 'claude-pro', labelKey: 'usage_stats.credentials_subscription_claude_pro' },
+      { kind: 'claude-max', labelKey: 'usage_stats.credentials_subscription_claude_max' },
+      { kind: 'claude-team', labelKey: 'usage_stats.credentials_subscription_claude_team' },
+    ])
+  })
+
+  it('builds Antigravity subscription badges from refreshed quota responses', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['free-auth', quotaResponse('free-auth', [], undefined, { provider: 'antigravity', plan: 'free' })],
+      ['pro-auth', quotaResponse('pro-auth', [], undefined, { provider: 'antigravity', plan: 'pro' })],
+      ['lite-auth', quotaResponse('lite-auth', [], undefined, { provider: 'antigravity', plan: 'ultra-lite' })],
+      ['ultra-auth', quotaResponse('ultra-auth', [], undefined, { provider: 'antigravity', plan: 'ultra' })],
+      ['unknown-auth', quotaResponse('unknown-auth', [], undefined, { provider: 'antigravity', plan: 'unknown', tierId: 'future-tier', tierName: 'Future' })],
+    ])
+
+    const rows = buildAuthFileCredentialRows([
+      identity({ identity: 'free-auth', type: 'antigravity', provider: 'antigravity' }),
+      identity({ identity: 'pro-auth', type: 'antigravity', provider: 'antigravity' }),
+      identity({ identity: 'lite-auth', type: 'antigravity', provider: 'antigravity' }),
+      identity({ identity: 'ultra-auth', type: 'antigravity', provider: 'antigravity' }),
+      identity({ identity: 'unknown-auth', type: 'antigravity', provider: 'antigravity' }),
+    ], quotas)
+
+    expect(rows.map((row) => row.subscriptionBadge)).toEqual([
+      { kind: 'antigravity-free', labelKey: 'usage_stats.credentials_subscription_antigravity_free' },
+      { kind: 'antigravity-pro', labelKey: 'usage_stats.credentials_subscription_antigravity_pro' },
+      { kind: 'antigravity-ultra-lite', labelKey: 'usage_stats.credentials_subscription_antigravity_ultra_lite' },
+      { kind: 'antigravity-ultra', labelKey: 'usage_stats.credentials_subscription_antigravity_ultra' },
+      { kind: 'antigravity-unknown', fallbackLabel: 'Future' },
+    ])
+  })
+
+  it('prefers refreshed quota subscription over usage identity subscription', () => {
     const quotas = new Map<string, UsageQuotaCheckResponse>([
       ['auth-1', quotaResponse('auth-1', [
-        { key: 'rate_limit.primary_window', planType: 'pro' },
+        { key: 'rate_limit.primary_window' },
+      ], undefined, { provider: 'codex', plan: 'pro-20x' })],
+    ])
+
+    const rows = buildAuthFileCredentialRows([
+      identity({ identity: 'auth-1', subscription: { provider: 'codex', plan: 'plus' } }),
+    ], quotas)
+
+    expect(rows[0].subscriptionBadge).toEqual({
+      kind: 'codex-pro20x',
+      labelKey: 'usage_stats.credentials_subscription_codex_pro_20x',
+    })
+  })
+
+  it('falls back to identity subscription when quota has none', () => {
+    const quotas = new Map<string, UsageQuotaCheckResponse>([
+      ['auth-1', quotaResponse('auth-1', [
+        { key: 'rate_limit.primary_window' },
       ])],
     ])
 
     const rows = buildAuthFileCredentialRows([
-      identity({ identity: 'auth-1', plan_type: 'plus' }),
+      identity({ identity: 'auth-1', subscription: { provider: 'codex', plan: 'enterprise' } }),
     ], quotas)
 
-    expect(rows[0].planTypeLabel).toBe('Pro')
-    expect(rows[0].planTypeTone).toBe('pro')
-  })
-
-  it('formats unknown refreshed quota plan types in the frontend', () => {
-    const quotas = new Map<string, UsageQuotaCheckResponse>([
-      ['auth-1', quotaResponse('auth-1', [
-        { key: 'rate_limit.primary_window', planType: ' enterprise ' },
-      ])],
-    ])
-
-    const rows = buildAuthFileCredentialRows([
-      identity({ identity: 'auth-1', plan_type: 'plus' }),
-    ], quotas)
-
-    expect(rows[0].planTypeLabel).toBe('Enterprise')
-    expect(rows[0].planTypeTone).toBe('neutral')
+    expect(rows[0].subscriptionBadge).toEqual({
+      kind: 'codex-enterprise',
+      labelKey: 'usage_stats.credentials_subscription_codex_enterprise',
+    })
   })
 
   it('builds active-until remaining days badge with zero as the minimum', () => {

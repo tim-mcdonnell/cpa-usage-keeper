@@ -237,7 +237,7 @@ func TestAuthAPIKeyLoginSuccessClearsFailedAttempts(t *testing.T) {
 	keyProvider := &authCPAAPIKeyStub{findErr: context.Canceled}
 	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{CPAAPIKeys: keyProvider})
 
-	for i := 0; i < maxFailedLoginAttempts; i++ {
+	for i := 0; i < maxFailedLoginAttempts-1; i++ {
 		resp := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/api-key-login", strings.NewReader(`{"apiKey":"missing"}`))
 		req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
@@ -493,13 +493,10 @@ func TestAuthSessionManagementListsAdminAndAPIKeySessionsWithCurrentFirst(t *tes
 
 	var adminRows int
 	apiLabels := map[string]string{}
-	for index, item := range parsed.Items {
+	for _, item := range parsed.Items {
 		switch item.Kind {
 		case "admin":
 			adminRows++
-			if index > 1 {
-				t.Fatalf("expected admin sessions before API key sessions, got %+v", parsed.Items)
-			}
 			if item.ID == "" || item.ID == adminToken1 || item.ID == adminToken2 || item.Role != string(auth.RoleAdmin) || item.LoginAt == "" || item.ExpiresAt == "" {
 				t.Fatalf("unexpected admin session row: %+v", item)
 			}
@@ -509,9 +506,6 @@ func TestAuthSessionManagementListsAdminAndAPIKeySessionsWithCurrentFirst(t *tes
 				}
 			}
 		case "api_key":
-			if index < 2 {
-				t.Fatalf("expected API key sessions after admin sessions, got %+v", parsed.Items)
-			}
 			if item.Role != string(auth.RoleAPIKeyViewer) || item.ID == "" || item.ID == viewerToken1 || item.ID == viewerToken2 || item.APIKeyID == "" || item.LoginAt == "" || item.ExpiresAt == "" {
 				t.Fatalf("unexpected API key session row: %+v", item)
 			}
@@ -669,7 +663,7 @@ func TestAuthLoginRateLimitsRepeatedFailures(t *testing.T) {
 	}
 }
 
-func TestAuthLoginAllowsCorrectPasswordAfterRateLimitThreshold(t *testing.T) {
+func TestAuthLoginRateLimitBlocksCorrectPasswordAfterThreshold(t *testing.T) {
 	sessions := auth.NewSessionManager(time.Hour)
 	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
 	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "")
@@ -693,8 +687,11 @@ func TestAuthLoginAllowsCorrectPasswordAfterRateLimitThreshold(t *testing.T) {
 	req.RemoteAddr = "198.51.100.2:1234"
 	router.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusNoContent {
-		t.Fatalf("expected correct password to clear failed attempts and login, got %d", resp.Code)
+	if resp.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected correct password to remain rate limited, got %d", resp.Code)
+	}
+	if resp.Header().Get("Retry-After") == "" {
+		t.Fatal("expected rate-limited login to include Retry-After")
 	}
 }
 

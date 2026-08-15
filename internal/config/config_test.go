@@ -13,11 +13,11 @@ import (
 )
 
 var configEnvKeys = []string{
-	"APP_PORT", "APP_BASE_PATH", "CPA_PUBLIC_URL", "WORK_DIR", "CPA_BASE_URL", "CPA_MANAGEMENT_KEY", "POLL_INTERVAL",
+	"APP_HOST", "APP_PORT", "APP_BASE_PATH", "CPA_PUBLIC_URL", "WORK_DIR", "CPA_BASE_URL", "CPA_MANAGEMENT_KEY", "POLL_INTERVAL",
 	"USAGE_SYNC_MODE", "REDIS_QUEUE_ADDR", "REDIS_QUEUE_TLS", "REDIS_QUEUE_BATCH_SIZE", "REDIS_QUEUE_IDLE_INTERVAL",
-	"SQLITE_PATH", "BACKUP_ENABLED", "BACKUP_DIR", "BACKUP_INTERVAL", "BACKUP_RETENTION_DAYS", "CLEANUP_USAGE_EVENTS_ENABLED",
+	"SQLITE_PATH", "BACKUP_ENABLED", "BACKUP_DIR", "BACKUP_INTERVAL", "BACKUP_RETENTION_DAYS",
 	"REQUEST_TIMEOUT", "LOG_LEVEL", "LOG_FILE_ENABLED", "LOG_DIR", "LOG_RETENTION_DAYS",
-	"AUTH_ENABLED", "LOGIN_PASSWORD", "AUTH_SESSION_TTL", "TZ", "TLS_SKIP_VERIFY", "QUOTA_REFRESH_WORKER_LIMIT",
+	"AUTH_ENABLED", "LOGIN_PASSWORD", "AUTH_SESSION_TTL", "TRUSTED_PROXY_CIDRS", "TZ", "TLS_SKIP_VERIFY", "QUOTA_REFRESH_WORKER_LIMIT",
 }
 
 func TestMain(m *testing.M) {
@@ -28,6 +28,9 @@ func TestMain(m *testing.M) {
 		if err := os.Unsetenv(key); err != nil {
 			panic(err)
 		}
+	}
+	if err := os.Setenv("LOGIN_PASSWORD", "test-login-password"); err != nil {
+		panic(err)
 	}
 	code := m.Run()
 	for _, key := range configEnvKeys {
@@ -53,6 +56,9 @@ func withIsolatedEnvFiles(t *testing.T) {
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatalf("unset %s: %v", key, err)
 		}
+	}
+	if err := os.Setenv("LOGIN_PASSWORD", "test-login-password"); err != nil {
+		t.Fatalf("set test login password: %v", err)
 	}
 	t.Cleanup(func() {
 		for _, key := range configEnvKeys {
@@ -125,8 +131,8 @@ func TestLoadFromEnvAppliesDefaults(t *testing.T) {
 	if cfg.SQLitePath != filepath.Join("data", "app.db") {
 		t.Fatalf("expected default sqlite path data/app.db, got %s", cfg.SQLitePath)
 	}
-	if cfg.AuthEnabled {
-		t.Fatal("expected auth to be disabled by default")
+	if !cfg.AuthEnabled {
+		t.Fatal("expected auth to be enabled by default")
 	}
 	if cfg.AuthSessionTTL != 7*24*time.Hour {
 		t.Fatalf("expected default auth session ttl 168h, got %s", cfg.AuthSessionTTL)
@@ -366,6 +372,7 @@ func TestLoadFromEnvRequiresCriticalValues(t *testing.T) {
 		t.Setenv("CPA_BASE_URL", "http://127.0.0.1:"+cpa.ManagementRedisDefaultPort)
 		t.Setenv("CPA_MANAGEMENT_KEY", "secret")
 		t.Setenv("AUTH_ENABLED", "true")
+		t.Setenv("LOGIN_PASSWORD", "")
 
 		_, err := LoadFromEnv()
 		if err == nil || err.Error() != "LOGIN_PASSWORD is required when AUTH_ENABLED is true" {

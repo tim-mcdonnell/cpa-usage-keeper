@@ -20,6 +20,9 @@ export const REQUEST_EVENT_COLUMN_IDS = [
   'cache_read_rate',
   'total_tokens',
   'total_cost',
+  'client_ip',
+  'x_forwarded_for',
+  'user_agent',
 ] as const;
 
 export type RequestEventColumnId = typeof REQUEST_EVENT_COLUMN_IDS[number];

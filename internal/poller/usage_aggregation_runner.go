@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
+	"cpa-usage-keeper/internal/activity"
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/quota"
+	"cpa-usage-keeper/internal/latency"
+	"cpa-usage-keeper/internal/overview"
 	"cpa-usage-keeper/internal/repository"
 
 	"github.com/sirupsen/logrus"
@@ -19,598 +19,642 @@ import (
 )
 
 const (
-	// usageAggregationInboxRetryInterval 控制 backlog 仍存在时再次检查的最短间隔。
+	// usageAggregationDefaultDebounceInterval 合并持续 CPA 提交，窗口内只提高目标而不重置计时。
+	usageAggregationDefaultDebounceInterval = 5 * time.Second
+	// usageAggregationInboxRetryInterval 给正在等待落库的 CPA 批次优先占用唯一 writer。
 	usageAggregationInboxRetryInterval = 100 * time.Millisecond
-	// usageAggregationHeaderRetryInterval 控制 quota appender 拒绝后再次投递的有界间隔。
-	usageAggregationHeaderRetryInterval = 100 * time.Millisecond
 	// usageAggregationErrorBackoffInitial 避免持续数据库错误形成 CPU 忙循环。
 	usageAggregationErrorBackoffInitial = 100 * time.Millisecond
-	// usageAggregationErrorBackoffMax 限制恢复等待，避免新数据长期得不到重试。
+	// usageAggregationErrorBackoffMax 限制恢复等待，避免短暂错误让聚合长期停顿。
 	usageAggregationErrorBackoffMax = 2 * time.Second
-	// usageAggregationTransactionTimeout 给连接获取和一个短事务共同设置保守上限。
+	// usageAggregationTransactionTimeout 给连接获取和单个短事务共同设置保守上限。
 	usageAggregationTransactionTimeout = 30 * time.Second
-	// usageAggregationHeaderCursorTimeout 限制事务提交后的普通 header gate 查询等待。
-	usageAggregationHeaderCursorTimeout = time.Second
-	// usageAggregationShutdownFlushTimeout 限制关闭时 best-effort header cursor 查询等待。
-	usageAggregationShutdownFlushTimeout = time.Second
-	// usageAggregationPendingHeaderLimit 限制内存中不同 auth_index 的等待快照数量。
-	usageAggregationPendingHeaderLimit = 1000
+	// usageAggregationEventPageSize 与 repository 的共享事件页硬上限保持一致。
+	usageAggregationEventPageSize = 1000
 )
 
-// UsageAggregationKind 标识单 writer runner 当前执行的独立聚合事务。
+// UsageAggregationKind 标识 runner 当前执行的两种公平调度 turn。
 type UsageAggregationKind string
 
 const (
-	// UsageAggregationKindOverview 表示既有 hourly/daily 与 Overview checkpoint 事务。
-	UsageAggregationKindOverview UsageAggregationKind = "overview"
-	// UsageAggregationKindActivity 表示新 Activity rows 与独立 checkpoint 事务。
-	UsageAggregationKindActivity UsageAggregationKind = "activity"
-	// UsageAggregationKindIdentity 表示一页既有 usage identity 聚合事务。
+	// UsageAggregationKindRollups 一次最多处理 Overview、Activity、Latency 各一页。
+	UsageAggregationKindRollups UsageAggregationKind = "rollups"
+	// UsageAggregationKindIdentity 沿用现有 Identity 分页和每行 cursor。
 	UsageAggregationKindIdentity UsageAggregationKind = "identity"
 )
 
-// UsageAggregationRunResult 描述一次调度是否让路或真正处理了数据。
+// UsageAggregationRunResult 描述一次 turn 是否写入数据或为 CPA inbox 让路。
 type UsageAggregationRunResult struct {
-	// Kind 是本次选择的独立聚合类型；inbox 让路时为空。
 	Kind UsageAggregationKind
-	// Processed 表示本次事务处理了数据，或确认仍有同类有界工作必须继续调度。
+	// Processed 表示本 turn 至少提交了一页 rollup，或 Identity 实际处理了行。
 	Processed bool
-	// DeferredForInbox 表示发现前台 inbox backlog 后没有启动聚合事务。
+	// DeferredForInbox 表示 writer 前发现 CPA 批次等待落库，本 turn 主动停止。
 	DeferredForInbox bool
-	// HeaderRetryPending 表示 ready snapshot 被 appender 拒绝后仍保留在内存。
-	HeaderRetryPending bool
 }
 
-// pendingUsageHeaderSnapshot 把 quota snapshot 与所需 Overview event cursor 绑定。
-type pendingUsageHeaderSnapshot struct {
-	// snapshot 是按 auth_index 合并后等待投递的最新值。
-	snapshot quota.UsageHeaderSnapshot
-	// requiredOverviewEventID 是该 snapshot 所属提交批次的最大 event ID。
-	requiredOverviewEventID int64
+// UsageAggregationRunnerOptions 只开放测试需要控制的时钟和时间窗口，不增加用户配置项。
+type UsageAggregationRunnerOptions struct {
+	DebounceInterval time.Duration
+	NowFunc          func() time.Time
 }
 
-// UsageAggregationRunner 串行公平调度 Overview、Activity 和 Identity 三类短事务。
+// UsageAggregationRunner 在一个 goroutine 内公平调度共享 rollups 与既有 Identity。
 type UsageAggregationRunner struct {
-	// db 保持项目现有单连接 SQLite writer。
-	db *gorm.DB
-	// headerAppender 接收已经越过 Overview checkpoint gate 的 quota snapshots。
-	headerAppender quota.UsageHeaderSnapshotAppender
-	// now 为每个短事务提供同一次固定时间。
-	now func() time.Time
+	db               *gorm.DB
+	now              func() time.Time
+	debounceInterval time.Duration
 
-	// mu 保护 notifier 与 runner goroutine 共享的轻量内存状态。
+	// mu 只保护轻量内存目标和 Identity 分页状态，锁内不执行数据库操作。
 	mu sync.Mutex
-	// nextKind 记录下一次应该获得 writer 的聚合类型。
+	// nextKind 固定在 rollups 与 Identity 之间轮转，防止任一 backlog 独占 writer。
 	nextKind UsageAggregationKind
-	// identityAfterID 只在一轮 identity ID 扫描期间保存在内存。
+	// startupTargetLoaded 保证完全静默时启动只查询一次 MAX(id)。
+	startupTargetLoaded bool
+	// activeRound 表示当前已有冻结目标；后续窗口到期时可以把目标提高到更新的已提交事件。
+	activeRound bool
+	// activeTargetEventID 是当前窗口内所有共享和 fallback 页面共同追赶的固定上界。
+	activeTargetEventID int64
+	// rollupsReachedTarget 避免已追平后为了判断完成再次查询数据库。
+	rollupsReachedTarget bool
+	// pendingTargetEventID 保存尚未冻结窗口内收到的最大已提交事件 ID。
+	pendingTargetEventID int64
+
+	// identityAfterID 保留现有一轮 Identity ID 分页的内存 cursor。
 	identityAfterID int64
-	// identityTargetGeneration 记录 usage/metadata 通知要求完成的最新 Identity 扫描代际。
+	// identityTargetGeneration 表示 usage/metadata 通知要求覆盖的最新扫描代际。
 	identityTargetGeneration uint64
-	// identityScanGeneration 记录当前分页扫描开始时已经观察到的通知代际。
+	// identityScanGeneration 是当前分页扫描从头开始时捕获的通知代际。
 	identityScanGeneration uint64
-	// pendingHeaders 是 sampled-recording 的第二个 coalescing seam。
-	// 每个 auth_index 只有 Overview gate 前最终存活的 snapshot 可继续成为 observation。
-	pendingHeaders map[string]pendingUsageHeaderSnapshot
-	// wake 合并连续通知，调用前台永远不等待后台消费。
+
+	// wake 只表达状态已经变化，容量 1 会自然合并连续通知。
 	wake chan struct{}
 }
 
-// NewUsageAggregationRunner 创建从 Overview 开始公平轮转的单 writer runner。
-func NewUsageAggregationRunner(db *gorm.DB, headerAppender quota.UsageHeaderSnapshotAppender) *UsageAggregationRunner {
-	// 构造时只初始化内存状态，不启动额外 SQLite writer goroutine。
+// NewUsageAggregationRunner 创建生产默认 5 秒窗口的单 writer runner。
+func NewUsageAggregationRunner(db *gorm.DB) *UsageAggregationRunner {
+	return NewUsageAggregationRunnerWithOptions(db, UsageAggregationRunnerOptions{})
+}
+
+// NewUsageAggregationRunnerWithOptions 创建可控制时钟和 debounce 的内部测试 runner。
+func NewUsageAggregationRunnerWithOptions(db *gorm.DB, options UsageAggregationRunnerOptions) *UsageAggregationRunner {
+	debounceInterval := options.DebounceInterval
+	if debounceInterval <= 0 {
+		debounceInterval = usageAggregationDefaultDebounceInterval
+	}
+	now := options.NowFunc
+	if now == nil {
+		now = time.Now
+	}
 	return &UsageAggregationRunner{
-		// 复用 App 已打开的单连接数据库。
-		db: db,
-		// 保留现有 quota service 的非阻塞 appender 接口。
-		headerAppender: headerAppender,
-		// 生产默认使用系统时钟，repository 内部会再统一存储时区。
-		now: time.Now,
-		// 第一个短事务固定选择 Overview，优先满足旧表与 header gate。
-		nextKind: UsageAggregationKindOverview,
-		// 空 map 用于接收 usage 提交后的 header snapshots。
-		pendingHeaders: make(map[string]pendingUsageHeaderSnapshot),
-		// 容量 1 只表达“有工作”，不按通知次数累计任务。
-		wake: make(chan struct{}, 1),
+		db:                       db,
+		now:                      now,
+		debounceInterval:         debounceInterval,
+		nextKind:                 UsageAggregationKindRollups,
+		identityTargetGeneration: 1, // 启动时必须覆盖一次进程启动前已经存在的 identities。
+		wake:                     make(chan struct{}, 1),
 	}
 }
 
-// NotifyUsageEventsCommitted 在 usage 事务提交后只更新内存目标并发送非阻塞 wake。
-func (r *UsageAggregationRunner) NotifyUsageEventsCommitted(events []entities.UsageEvent, snapshots []quota.UsageHeaderSnapshot) {
-	// nil runner 不应由生产构造，但保持 notifier 调用可安全忽略。
+// NotifyUsageEventsCommitted 在事务成功后只提高内存目标并非阻塞唤醒 runner。
+func (r *UsageAggregationRunner) NotifyUsageEventsCommitted(events []entities.UsageEvent) {
 	if r == nil {
 		return
 	}
-	// 本批最大 event ID 是所有 snapshot 共用的 Overview checkpoint gate。
 	maxEventID := int64(0)
-	// 只遍历已提交事件，不读取数据库或等待聚合。
 	for _, event := range events {
-		// 自增 ID 更大时推进本批 gate 目标。
 		if event.ID > maxEventID {
 			maxEventID = event.ID
 		}
 	}
-	// 没有已提交 ID 时不能建立可靠 gate，只发送 wake 供已有 checkpoint catch-up。
-	if maxEventID > 0 {
-		// droppedHeaders 记录容量已满时主动舍弃的新 auth_index 数量。
-		droppedHeaders := 0
-		// 加锁只覆盖内存 map 合并，不执行 SQLite 或 quota 工作。
-		r.mu.Lock()
-		// 每批已提交 usage 都要求 Identity 在当前分页轮结束后覆盖一次最新代际。
-		r.identityTargetGeneration++
-		// 同批 snapshots 按 auth_index 分别合并。
-		for _, snapshot := range snapshots {
-			// auth_index 去除首尾空白后作为稳定合并键。
-			authIndex := strings.TrimSpace(snapshot.AuthIndex)
-			// 空 auth_index 无法关联 quota identity，直接跳过。
-			if authIndex == "" {
-				continue
-			}
-			// 读取同一 auth_index 当前等待值以比较新旧观测时间。
-			existing, exists := r.pendingHeaders[authIndex]
-			// 更旧 snapshot 不覆盖已经等待的更新值。
-			if exists && snapshot.ObservedAt.Before(existing.snapshot.ObservedAt) {
-				continue
-			}
-			// 容量已满时仍允许更新现有 auth_index，但拒绝继续增长新的 map key。
-			if !exists && len(r.pendingHeaders) >= usageAggregationPendingHeaderLimit {
-				droppedHeaders++
-				continue
-			}
-			// clone HTTP headers，避免调用方复用 map 后改变内存快照。
-			snapshot.Headers = snapshot.Headers.Clone()
-			// 规范化 snapshot 自身的 auth_index，确保 appender 收到稳定键。
-			snapshot.AuthIndex = authIndex
-			// 新值同时记录所属提交批次的 Overview gate。
-			r.pendingHeaders[authIndex] = pendingUsageHeaderSnapshot{snapshot: snapshot, requiredOverviewEventID: maxEventID}
-		}
-		// map 更新完成立即释放锁。
-		r.mu.Unlock()
-		// 容量保护只影响 header quota 新鲜度，不能阻塞或回滚已经提交的 usage events。
-		if droppedHeaders > 0 {
-			logrus.WithField("dropped_snapshot_count", droppedHeaders).Warn("usage aggregation pending header capacity reached")
-		}
+	if maxEventID <= 0 {
+		return
 	}
-	// capacity=1 channel 合并连续通知，default 分支保证前台不阻塞。
+	// usage 提交既需要三个全局 rollup 追赶，也需要 Identity 覆盖一次最新事件。
+	r.mu.Lock()
+	if maxEventID > r.pendingTargetEventID {
+		r.pendingTargetEventID = maxEventID
+	}
+	r.identityTargetGeneration++
+	r.mu.Unlock()
 	r.signalWake()
 }
 
-// NotifyUsageIdentitiesChanged 在 metadata 提交后只唤醒已有 runner，不同步执行历史补算。
+// NotifyUsageIdentitiesChanged 只提高 Identity 代际，不创建或重置 rollups timer。
 func (r *UsageAggregationRunner) NotifyUsageIdentitiesChanged() {
-	// nil runner 允许可选 notifier 调用安全返回。
 	if r == nil {
 		return
 	}
-	// metadata 新建或恢复 identity 时推进目标代际，确保当前分页轮结束后从 ID 头部重扫。
 	r.mu.Lock()
-	// 代际只表达至少需要一次新扫描，不保存任何数据库状态。
 	r.identityTargetGeneration++
-	// 更新完成立即释放锁，notifier 不执行 SQLite 工作。
 	r.mu.Unlock()
-	// capacity=1 wake 会与 usage 提交通知自然合并。
 	r.signalWake()
 }
 
-// Run 在一个 goroutine 内持续执行短事务，并在空闲时等待合并 wake。
+// Run 启动时立即追平一次，之后只在真实通知、timer 或内部重试时工作。
 func (r *UsageAggregationRunner) Run(ctx context.Context) error {
-	// nil runner 无法进入后台生命周期。
 	if r == nil {
 		return fmt.Errorf("usage aggregation runner is nil")
 	}
-	// nil 数据库必须在启动时明确失败，不能静默空转。
 	if r.db == nil {
 		return fmt.Errorf("database is nil")
 	}
-	// nil context 统一降级为 Background，保持 Runner 接口可安全调用。
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// 退出路径最后尝试一次 ready snapshot 投递；内部会忽略 cancel 但保留有界 deadline。
-	defer r.flushReadyHeaderSnapshotsOnShutdown(ctx)
-	// startup wake 补偿进程启动前或上次退出前尚未追平的 checkpoints。
-	r.signalWake()
-	// errorBackoffs 按 kind 独立保存持续失败退避，互不覆盖或重置。
-	errorBackoffs := make(map[UsageAggregationKind]time.Duration, 3)
 
-	// 外层循环只在 startup、通知或内部重试需要工作时进入调度。
+	// 启动 MAX(id) 失败时使用同一有界退避重试；成功后永不在静默状态重复查询。
+	startupBackoff := usageAggregationErrorBackoffInitial
 	for {
-		// 空闲时不轮询数据库，等待 context 关闭或容量 1 wake。
-		select {
-		case <-ctx.Done():
-			// context 关闭时当前没有事务，直接正常退出。
-			return nil
-		case <-r.wake:
-			// 收到 wake 后开始一轮公平调度。
-		}
-
-		// 三类连续空 batch 才能证明当前一整轮没有工作。
-		emptyKinds := 0
-		// 内层循环每次仍只执行一个 RunOnce 短事务。
-		for emptyKinds < 3 {
-			// 每个新事务开始前先响应已经发生的 shutdown。
-			if ctx.Err() != nil {
+		if err := r.ensureStartupTarget(ctx); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 				return nil
 			}
-			// RunOnce 自己会在取 writer 前重新检查 processable inbox。
-			result, err := r.RunOnce(ctx)
-			// 某一类事务失败时记录错误并保留对应数据库 checkpoint。
+			logrus.WithError(err).WithField("aggregation_kind", UsageAggregationKindRollups).Error("usage aggregation batch failed")
+			if !r.waitForRetry(ctx, startupBackoff) {
+				return nil
+			}
+			startupBackoff = min(startupBackoff*2, usageAggregationErrorBackoffMax)
+			continue
+		}
+		break
+	}
+
+	errorBackoffs := make(map[UsageAggregationKind]time.Duration, 2)
+	var debounceTimer *time.Timer
+	for {
+		if ctx.Err() != nil {
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			return nil
+		}
+
+		// 新目标即使遇到旧目标持续失败，也拥有独立 one-shot 窗口，避免健康 Rollup 一起冻结。
+		r.mu.Lock()
+		pendingRollupWindow := r.pendingTargetEventID > 0 && (!r.activeRound || r.pendingTargetEventID > r.activeTargetEventID)
+		if pendingRollupWindow && debounceTimer == nil {
+			debounceTimer = time.NewTimer(r.debounceInterval)
+		}
+		runnable := r.hasRunnableWorkLocked()
+		r.mu.Unlock()
+
+		// Identity 处理期间 timer 也可能到期，每个短 turn 之间优先冻结当前窗口。
+		if debounceTimer != nil {
+			select {
+			case <-debounceTimer.C:
+				debounceTimer = nil
+				r.freezePendingTarget()
+				continue
+			default:
+			}
+		}
+
+		if runnable {
+			result, err := r.runPreparedOnce(ctx)
 			if err != nil {
-				// 只有错误链真正来自 parent cancel 时才按正常 shutdown 静默退出。
 				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 					return nil
 				}
 				logrus.WithError(err).WithField("aggregation_kind", result.Kind).Error("usage aggregation batch failed")
-				// 当前 kind 首次失败时从初始退避开始。
-				errorBackoff := errorBackoffs[result.Kind]
-				// map 尚无记录时填入初始间隔。
-				if errorBackoff == 0 {
-					errorBackoff = usageAggregationErrorBackoffInitial
+				r.advanceAfterFailure(result.Kind)
+				backoff := errorBackoffs[result.Kind]
+				if backoff == 0 {
+					backoff = usageAggregationErrorBackoffInitial
 				}
-				// 后台循环把下一个事务配额交给其它类型，避免永久错误阻塞全部聚合。
-				r.advanceAfterBackgroundFailure(result.Kind)
-				// 错误后等待有界 backoff；shutdown 会立即中断等待。
-				if !r.waitForRetry(ctx, errorBackoff) {
+				if !r.waitForRetry(ctx, backoff) {
 					return nil
 				}
-				// 当前 kind 下一次错误等待翻倍，但不超过固定上限。
-				errorBackoffs[result.Kind] = min(errorBackoff*2, usageAggregationErrorBackoffMax)
-				// 错误不能算作空 batch，继续让其它 kind 获得事务配额。
-				emptyKinds = 0
+				errorBackoffs[result.Kind] = min(backoff*2, usageAggregationErrorBackoffMax)
 				continue
 			}
-			// 当前 kind 成功后只清除自己的退避状态，不影响其它失败类型。
 			delete(errorBackoffs, result.Kind)
-			// inbox backlog 时本次没有启动聚合事务。
 			if result.DeferredForInbox {
-				// 短暂等待 process runner 提交；其 notifier wake 也可提前结束等待。
 				if !r.waitForRetry(ctx, usageAggregationInboxRetryInterval) {
 					return nil
 				}
-				// backlog 可能仍存在，继续从事务前检查重新判断。
-				emptyKinds = 0
+			}
+			continue
+		}
+
+		// 没有可执行 turn 时阻塞等待；这条路径不访问数据库。
+		if debounceTimer == nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-r.wake:
 				continue
 			}
-			// Overview 没有 event 但 header 仍被拒绝时，按有界间隔继续当前 wake。
-			if result.HeaderRetryPending && !result.Processed {
-				// 新 wake 或 shutdown 都可以提前结束等待，禁止形成 quota 重试忙循环。
-				if !r.waitForRetry(ctx, usageAggregationHeaderRetryInterval) {
-					return nil
-				}
-				// header 仍属于未完成后台工作，不能累计为空 batch。
-				emptyKinds = 0
-				continue
-			}
-			// 处理到数据时立即继续下一 kind，但 RunOnce 会再次检查 inbox。
-			if result.Processed {
-				emptyKinds = 0
-				continue
-			}
-			// 成功空 batch 表示当前 kind 暂时已经追平。
-			emptyKinds++
+		}
+		select {
+		case <-ctx.Done():
+			debounceTimer.Stop()
+			return nil
+		case <-r.wake:
+			// 新通知只更新 pending target；现有 timer 保持原到期时间。
+			continue
+		case <-debounceTimer.C:
+			debounceTimer = nil
+			r.freezePendingTarget()
 		}
 	}
 }
 
-// signalWake 合并重复通知并保证前台调用永不等待后台消费。
-func (r *UsageAggregationRunner) signalWake() {
-	// nil wake 只可能来自非标准零值 runner，防御性跳过发送。
-	if r == nil || r.wake == nil {
-		return
-	}
-	// channel 有空位时写入一个工作信号。
-	select {
-	case r.wake <- struct{}{}:
-		// 成功写入后由后台循环消费。
-	default:
-		// 已有未消费信号时直接合并本次通知。
-	}
-}
-
-// waitForRetry 等待退避、下一次 wake 或 shutdown，并返回是否应继续调度。
-func (r *UsageAggregationRunner) waitForRetry(ctx context.Context, delay time.Duration) bool {
-	// timer 只覆盖当前一次有界等待。
-	timer := time.NewTimer(delay)
-	// 提前退出时停止 timer，避免资源滞留到自然触发。
-	defer timer.Stop()
-	// 任一信号都结束当前等待。
-	select {
-	case <-ctx.Done():
-		// shutdown 优先结束后台循环。
-		return false
-	case <-r.wake:
-		// 新提交数据或 metadata 变化触发立即重试。
-		return true
-	case <-timer.C:
-		// 没有通知时按有界间隔自行重试。
-		return true
-	}
-}
-
-// RunOnce 最多执行一个短写事务，并在事务前让路给 processable inbox。
+// RunOnce 是同步测试/诊断入口：初始化或待冻结目标都立即处理，不真实等待 5 秒。
 func (r *UsageAggregationRunner) RunOnce(ctx context.Context) (UsageAggregationRunResult, error) {
-	// result 默认表示没有选择事务也没有处理数据。
-	result := UsageAggregationRunResult{}
-	// nil runner 无法调度任何聚合。
 	if r == nil {
-		return result, fmt.Errorf("usage aggregation runner is nil")
+		return UsageAggregationRunResult{}, fmt.Errorf("usage aggregation runner is nil")
 	}
-	// nil 数据库不能执行 inbox 检查或聚合事务。
 	if r.db == nil {
-		return result, fmt.Errorf("database is nil")
+		return UsageAggregationRunResult{}, fmt.Errorf("database is nil")
 	}
-	// nil context 统一降级为 Background，避免 GORM WithContext panic。
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// 本轮的 inbox 门禁、聚合事务和提交后 cursor 都共同控制 writer 进度，不能被页面 reader 饱和反向阻塞。
-	// Write scope 只绑定当前 RunOnce；其它 Overview、Activity、Analysis 等纯查询仍由 dbresolver 自动分流。
-	// clause 后重新建 session，保留 writer ConnPool，同时阻止门禁查询的 Model/Where 泄漏到后续聚合。
+	if err := r.ensureStartupTarget(ctx); err != nil {
+		return UsageAggregationRunResult{Kind: UsageAggregationKindRollups}, err
+	}
+	// 直接调用不启动 timer；它把已经收到的最大 ID 作为当前固定目标。
+	r.freezePendingTarget()
+	return r.runPreparedOnce(ctx)
+}
+
+func (r *UsageAggregationRunner) ensureStartupTarget(ctx context.Context) error {
+	r.mu.Lock()
+	loaded := r.startupTargetLoaded
+	r.mu.Unlock()
+	if loaded {
+		return nil
+	}
+	targetEventID, err := repository.LoadUsageAggregationTargetEventID(ctx, r.db)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.startupTargetLoaded {
+		return nil
+	}
+	r.startupTargetLoaded = true
+	r.activeRound = true
+	r.activeTargetEventID = targetEventID
+	r.rollupsReachedTarget = targetEventID == 0
+	// 查询期间到达且 ID 更大的通知留给下一窗口；已被 MAX 覆盖的通知无需再跑一轮。
+	if r.pendingTargetEventID <= targetEventID {
+		r.pendingTargetEventID = 0
+	}
+	return nil
+}
+
+func (r *UsageAggregationRunner) freezePendingTarget() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pendingTargetEventID <= 0 {
+		return
+	}
+	// 重复的旧通知不应降低或重启当前目标。
+	if r.activeRound && r.pendingTargetEventID <= r.activeTargetEventID {
+		r.pendingTargetEventID = 0
+		return
+	}
+	// 新窗口到期后直接提高当前目标；落后的类型保留旧水位，健康类型可继续追新数据。
+	r.activeRound = true
+	r.activeTargetEventID = r.pendingTargetEventID
+	r.pendingTargetEventID = 0
+	r.rollupsReachedTarget = false
+}
+
+func (r *UsageAggregationRunner) hasRunnableWorkLocked() bool {
+	return r.activeRound || r.identityWorkPendingLocked()
+}
+
+func (r *UsageAggregationRunner) identityWorkPendingLocked() bool {
+	return r.identityAfterID != 0 || r.identityScanGeneration < r.identityTargetGeneration
+}
+
+func (r *UsageAggregationRunner) runPreparedOnce(ctx context.Context) (UsageAggregationRunResult, error) {
+	r.mu.Lock()
+	// 只有两类工作都存在时才遵循公平轮转；其中一类已经追平时直接执行另一类，避免空 turn 查询数据库。
+	kind, runnable := r.nextRunnableKindLocked()
+	targetEventID := r.activeTargetEventID
+	activeRound := r.activeRound
+	identityPending := r.identityWorkPendingLocked()
+	identityAfterID := r.identityAfterID
+	identityPassGeneration := r.identityScanGeneration
+	if kind == UsageAggregationKindIdentity && identityPending && identityAfterID == 0 {
+		identityPassGeneration = r.identityTargetGeneration
+	}
+	r.mu.Unlock()
+
+	result := UsageAggregationRunResult{Kind: kind}
+	if !runnable {
+		return result, nil
+	}
 	writeDB := r.db.Clauses(dbresolver.Write).Session(&gorm.Session{Context: ctx})
-	// 每个写事务之前都在 writer 上查询与 process runner 相同的可处理 inbox 集合。
+	// Identity 与 rollups 都会写唯一 writer，进入 turn 前先给 CPA inbox 让路。
 	hasInbox, err := repository.HasProcessableRedisUsageInbox(ctx, writeDB)
-	// inbox 查询失败时保守返回错误，绝不猜测前台没有 backlog。
 	if err != nil {
 		return result, err
 	}
-	// 发现 pending/process_failed 时不启动任何聚合写事务。
 	if hasInbox {
 		result.DeferredForInbox = true
 		return result, nil
 	}
 
-	// 只短暂读取轮转类型和 identity 内存 cursor。
-	r.mu.Lock()
-	// RunOnce 读取当前事务配额；失败不推进数据库 checkpoint，后台调用方可把配额轮转给其它 kind。
-	kind := r.nextKind
-	// identity cursor 只有 Identity kind 会使用。
-	identityAfterID := r.identityAfterID
-	// 当前分页轮默认沿用第一页成功时保存的通知代际。
-	identityPassGeneration := r.identityScanGeneration
-	// 从 ID 头部开始的新一轮扫描必须捕获此刻最新目标代际。
-	if kind == UsageAggregationKindIdentity && identityAfterID == 0 {
-		identityPassGeneration = r.identityTargetGeneration
-	}
-	// 事务开始前释放内存锁，不阻塞前台 notifier。
-	r.mu.Unlock()
-	// 结果记录本次实际选择的独立聚合类型。
-	result.Kind = kind
-	// 本轮 now 只读取一次，传给一个有界事务。
 	now := r.now()
-	// 短事务忽略 App cancel 以完成原子提交，但保留 caller deadline 并增加最大执行上限。
 	transactionCtx, cancelTransaction := boundedUsageAggregationContext(ctx, usageAggregationTransactionTimeout)
-	// 无论事务成功或失败都释放 deadline timer。
 	defer cancelTransaction()
 
-	// 根据公平轮转状态只调用一种 repository batch。
 	switch kind {
-	case UsageAggregationKindOverview:
-		// Overview batch 只写旧 hourly/daily 和自己的 checkpoint。
-		processed, runErr := repository.AggregateUsageOverviewStatsBatch(transactionCtx, writeDB, now)
-		// RunOnce 自身不推进轮转；后台 Run 会在记录失败后把配额暂时交给其它 kind。
+	case UsageAggregationKindRollups:
+		processed, deferred, reachedTarget, runErr := r.runRollupsTurn(transactionCtx, writeDB, activeRound, targetEventID, now)
+		result.Processed = processed
+		result.DeferredForInbox = deferred
 		if runErr != nil {
 			return result, runErr
 		}
-		// event 数大于零才表示本次真正处理了数据。
-		result.Processed = processed > 0
-		// 成功事务后轮转到 Activity。
-		r.advanceAfterSuccess(UsageAggregationKindOverview, 0, false, 0)
-		// App 已取消时 Overview 原子事务已经完成，不再启动额外 header cursor 查询。
-		if ctx.Err() != nil {
+		r.mu.Lock()
+		r.nextKind = UsageAggregationKindIdentity
+		if activeRound && r.activeRound && r.activeTargetEventID == targetEventID && reachedTarget {
+			r.rollupsReachedTarget = true
+		}
+		r.completeRollupRoundIfReadyLocked()
+		r.mu.Unlock()
+		return result, nil
+
+	case UsageAggregationKindIdentity:
+		if !identityPending {
+			r.mu.Lock()
+			r.nextKind = UsageAggregationKindRollups
+			r.mu.Unlock()
 			return result, nil
 		}
-		// header gate 不属于已开始的聚合事务，必须响应 App cancel 并使用独立短上限。
-		headerCtx, cancelHeader := context.WithTimeout(ctx, usageAggregationHeaderCursorTimeout)
-		// 只有 Overview 成功提交后才尝试释放满足 cursor gate 的 header snapshots。
-		headerRetryPending, err := r.flushReadyHeaderSnapshots(headerCtx, writeDB)
-		// cursor 查询或非阻塞 appender 返回后立即释放 header deadline timer。
-		cancelHeader()
-		// cursor 或 appender 前置查询失败时交给当前 Overview kind 的错误退避。
-		if err != nil {
-			return result, err
-		}
-		// appender 拒绝时保留显式重试状态，后台 Run 不依赖下一次外部 wake。
-		result.HeaderRetryPending = headerRetryPending
-	case UsageAggregationKindActivity:
-		// Activity batch 只写新表和自己的 checkpoint。
-		processed, runErr := repository.AggregateUsageActivityStatsBatch(transactionCtx, writeDB, now)
-		// RunOnce 自身不推进轮转；后台 Run 会先调度其它 kind，Activity checkpoint 保持不变。
-		if runErr != nil {
-			return result, runErr
-		}
-		// event 数大于零才表示本次真正处理了 Activity 数据。
-		result.Processed = processed > 0
-		// 成功事务后轮转到 Identity。
-		r.advanceAfterSuccess(UsageAggregationKindActivity, 0, false, 0)
-	case UsageAggregationKindIdentity:
-		// Identity batch 只处理固定一页 identities，并维护各行既有 cursor。
 		batch, runErr := repository.AggregateUsageIdentityStatsBatch(transactionCtx, writeDB, now, identityAfterID)
-		// 失败时不改变内存 cursor，下一次重试同一页。
 		if runErr != nil {
 			return result, runErr
 		}
-		// 成功后保存下一页 cursor；一轮结束时同时判断扫描期间是否收到更新通知。
-		rescanRequired := r.advanceAfterSuccess(UsageAggregationKindIdentity, batch.LastIdentityID, batch.ReachedEnd, identityPassGeneration)
-		// 有实际更新、尚有下一页或代际已过期时都必须继续当前 wake。
-		result.Processed = batch.ProcessedIdentities > 0 || !batch.ReachedEnd || rescanRequired
+		r.mu.Lock()
+		r.nextKind = UsageAggregationKindRollups
+		if batch.ReachedEnd {
+			r.identityAfterID = 0
+			r.identityScanGeneration = identityPassGeneration
+		} else {
+			r.identityAfterID = batch.LastIdentityID
+			r.identityScanGeneration = identityPassGeneration
+		}
+		// 尾页期间出现新通知时，pending=true 要求下一次从头重扫；未到尾页也属于仍有有界工作。
+		identityStillPending := r.identityWorkPendingLocked()
+		r.mu.Unlock()
+		result.Processed = batch.ProcessedIdentities > 0 || !batch.ReachedEnd || identityStillPending
+		return result, nil
+
 	default:
-		// 非法内存状态不能猜测事务类型，保持错误可观察。
 		return result, fmt.Errorf("unknown usage aggregation kind %q", kind)
 	}
-	// 返回本次唯一事务的处理结果。
-	return result, nil
 }
 
-// advanceAfterSuccess 只在对应短事务成功提交后推进公平轮转状态。
-func (r *UsageAggregationRunner) advanceAfterSuccess(kind UsageAggregationKind, lastIdentityID int64, identityReachedEnd bool, identityPassGeneration uint64) bool {
-	// 更新 next kind 与 identity cursor 必须和 notifier 的共享状态互斥。
-	r.mu.Lock()
-	// 函数结束统一释放轻量内存锁。
-	defer r.mu.Unlock()
-	// 三类成功事务按固定顺序轮转。
-	switch kind {
-	case UsageAggregationKindOverview:
-		// Overview 成功后下一事务固定为 Activity。
-		r.nextKind = UsageAggregationKindActivity
-	case UsageAggregationKindActivity:
-		// Activity 成功后下一事务固定为 Identity。
-		r.nextKind = UsageAggregationKindIdentity
-	case UsageAggregationKindIdentity:
-		// Identity 每次只占一个事务配额，随后把 writer 交还 Overview。
-		r.nextKind = UsageAggregationKindOverview
-		// 一轮结束后从最小 identity ID 开始下一轮。
-		if identityReachedEnd {
-			r.identityAfterID = 0
-			// 尾页完成后记录本轮真正覆盖到的通知代际。
-			r.identityScanGeneration = identityPassGeneration
-			// 扫描期间出现新通知时必须保持当前 wake，下一次 Identity 从 ID 头部重扫。
-			return identityPassGeneration < r.identityTargetGeneration
+func (r *UsageAggregationRunner) nextRunnableKindLocked() (UsageAggregationKind, bool) {
+	rollupsPending := r.activeRound
+	identityPending := r.identityWorkPendingLocked()
+	switch {
+	case rollupsPending && identityPending:
+		return r.nextKind, true
+	case rollupsPending:
+		return UsageAggregationKindRollups, true
+	case identityPending:
+		return UsageAggregationKindIdentity, true
+	default:
+		return r.nextKind, false
+	}
+}
+
+func (r *UsageAggregationRunner) runRollupsTurn(ctx context.Context, writeDB *gorm.DB, activeRound bool, targetEventID int64, now time.Time) (bool, bool, bool, error) {
+	if !activeRound {
+		return false, false, true, nil
+	}
+	snapshot, err := repository.LoadUsageAggregationCheckpointSnapshot(ctx, r.db)
+	if err != nil {
+		return false, false, false, err
+	}
+	if snapshot.OverviewCursor >= targetEventID && snapshot.ActivityCursor >= targetEventID && snapshot.LatencyCursor >= targetEventID {
+		return false, false, true, nil
+	}
+	if snapshot.Equal() {
+		return r.runSharedRollupsPage(ctx, writeDB, snapshot.OverviewCursor, targetEventID, now)
+	}
+	return r.runFallbackRollupsPages(ctx, writeDB, snapshot, targetEventID, now)
+}
+
+func (r *UsageAggregationRunner) runSharedRollupsPage(ctx context.Context, writeDB *gorm.DB, cursor, targetEventID int64, now time.Time) (bool, bool, bool, error) {
+	events, err := repository.LoadUsageAggregationEventPage(ctx, r.db, cursor, targetEventID, usageAggregationEventPageSize)
+	if err != nil {
+		return false, false, false, err
+	}
+	if len(events) == 0 {
+		return false, false, false, fmt.Errorf("shared usage aggregation page is empty before target %d from cursor %d", targetEventID, cursor)
+	}
+
+	// 三类纯计算复用同一份只读事件；各自错误只跳过自己，成功结果仍可用独立事务提交。
+	overviewHourly, overviewDaily, nextCursor := overview.BuildRows(events)
+	activityRows, activityErr := activity.BuildRows(events, now)
+	latencyRows, latencyErr := latency.BuildRows(events, now)
+
+	processed := false
+	pageErrors := make([]error, 0, 3)
+	if deferred, err := r.deferForInbox(ctx, writeDB); err != nil || deferred {
+		if err != nil {
+			pageErrors = append(pageErrors, err)
+		}
+		return processed, deferred, false, errors.Join(pageErrors...)
+	}
+	if err := repository.ApplyUsageOverviewAggregationPage(ctx, writeDB, cursor, nextCursor, overviewHourly, overviewDaily, now); err != nil {
+		pageErrors = append(pageErrors, err)
+	} else {
+		processed = true
+	}
+	if deferred, err := r.deferForInbox(ctx, writeDB); err != nil || deferred {
+		if err != nil {
+			pageErrors = append(pageErrors, err)
+		}
+		return processed, deferred, false, errors.Join(pageErrors...)
+	}
+	if activityErr != nil {
+		pageErrors = append(pageErrors, activityErr)
+	} else if err := repository.ApplyUsageActivityAggregationPage(ctx, writeDB, cursor, nextCursor, activityRows, now); err != nil {
+		pageErrors = append(pageErrors, err)
+	} else {
+		processed = true
+	}
+	if deferred, err := r.deferForInbox(ctx, writeDB); err != nil || deferred {
+		if err != nil {
+			pageErrors = append(pageErrors, err)
+		}
+		return processed, deferred, false, errors.Join(pageErrors...)
+	}
+	if latencyErr != nil {
+		pageErrors = append(pageErrors, latencyErr)
+	} else if err := repository.ApplyUsageLatencyAggregationPage(ctx, writeDB, cursor, nextCursor, latencyRows, now); err != nil {
+		pageErrors = append(pageErrors, err)
+	} else {
+		processed = true
+	}
+	if err := errors.Join(pageErrors...); err != nil {
+		return processed, false, false, err
+	}
+	return processed, false, nextCursor >= targetEventID, nil
+}
+
+func (r *UsageAggregationRunner) runFallbackRollupsPages(ctx context.Context, writeDB *gorm.DB, snapshot repository.UsageAggregationCheckpointSnapshot, targetEventID int64, now time.Time) (bool, bool, bool, error) {
+	processed := false
+	pageErrors := make([]error, 0, 3)
+	if snapshot.OverviewCursor < targetEventID {
+		events, err := repository.LoadUsageAggregationEventPage(ctx, r.db, snapshot.OverviewCursor, targetEventID, usageAggregationEventPageSize)
+		if err != nil {
+			pageErrors = append(pageErrors, err)
+		} else if len(events) == 0 {
+			pageErrors = append(pageErrors, fmt.Errorf("overview fallback page is empty before target %d", targetEventID))
 		} else {
-			// 未到末尾时保存本批最后 ID，下一轮 Identity 从其后继续。
-			r.identityAfterID = lastIdentityID
-			// 后续页面必须沿用第一页捕获的代际，不能把中途通知误认为已经覆盖。
-			r.identityScanGeneration = identityPassGeneration
+			hourly, daily, nextCursor := overview.BuildRows(events)
+			if deferred, deferErr := r.deferForInbox(ctx, writeDB); deferErr != nil || deferred {
+				if deferErr != nil {
+					pageErrors = append(pageErrors, deferErr)
+				}
+				return processed, deferred, false, errors.Join(pageErrors...)
+			}
+			if applyErr := repository.ApplyUsageOverviewAggregationPage(ctx, writeDB, snapshot.OverviewCursor, nextCursor, hourly, daily, now); applyErr != nil {
+				pageErrors = append(pageErrors, applyErr)
+			} else {
+				snapshot.OverviewCursor = nextCursor
+				processed = true
+			}
 		}
 	}
-	// Overview、Activity 和未结束的 Identity 页面都不需要额外重扫标记。
-	return false
+	if snapshot.ActivityCursor < targetEventID {
+		events, err := repository.LoadUsageAggregationEventPage(ctx, r.db, snapshot.ActivityCursor, targetEventID, usageAggregationEventPageSize)
+		if err != nil {
+			pageErrors = append(pageErrors, err)
+		} else if len(events) == 0 {
+			pageErrors = append(pageErrors, fmt.Errorf("activity fallback page is empty before target %d", targetEventID))
+		} else {
+			rows, buildErr := activity.BuildRows(events, now)
+			if buildErr != nil {
+				pageErrors = append(pageErrors, buildErr)
+			} else {
+				nextCursor := events[len(events)-1].ID
+				if deferred, deferErr := r.deferForInbox(ctx, writeDB); deferErr != nil || deferred {
+					if deferErr != nil {
+						pageErrors = append(pageErrors, deferErr)
+					}
+					return processed, deferred, false, errors.Join(pageErrors...)
+				}
+				if applyErr := repository.ApplyUsageActivityAggregationPage(ctx, writeDB, snapshot.ActivityCursor, nextCursor, rows, now); applyErr != nil {
+					pageErrors = append(pageErrors, applyErr)
+				} else {
+					snapshot.ActivityCursor = nextCursor
+					processed = true
+				}
+			}
+		}
+	}
+	if snapshot.LatencyCursor < targetEventID {
+		events, err := repository.LoadUsageAggregationEventPage(ctx, r.db, snapshot.LatencyCursor, targetEventID, usageAggregationEventPageSize)
+		if err != nil {
+			pageErrors = append(pageErrors, err)
+		} else if len(events) == 0 {
+			pageErrors = append(pageErrors, fmt.Errorf("latency fallback page is empty before target %d", targetEventID))
+		} else {
+			rows, buildErr := latency.BuildRows(events, now)
+			if buildErr != nil {
+				pageErrors = append(pageErrors, buildErr)
+			} else {
+				nextCursor := events[len(events)-1].ID
+				if deferred, deferErr := r.deferForInbox(ctx, writeDB); deferErr != nil || deferred {
+					if deferErr != nil {
+						pageErrors = append(pageErrors, deferErr)
+					}
+					return processed, deferred, false, errors.Join(pageErrors...)
+				}
+				if applyErr := repository.ApplyUsageLatencyAggregationPage(ctx, writeDB, snapshot.LatencyCursor, nextCursor, rows, now); applyErr != nil {
+					pageErrors = append(pageErrors, applyErr)
+				} else {
+					snapshot.LatencyCursor = nextCursor
+					processed = true
+				}
+			}
+		}
+	}
+	reached := snapshot.OverviewCursor >= targetEventID && snapshot.ActivityCursor >= targetEventID && snapshot.LatencyCursor >= targetEventID
+	return processed, false, reached, errors.Join(pageErrors...)
 }
 
-// advanceAfterBackgroundFailure 只改变公平轮转配额，不推进任何数据库或 identity cursor。
-func (r *UsageAggregationRunner) advanceAfterBackgroundFailure(kind UsageAggregationKind) {
-	// 非法或空 kind 表示错误发生在事务选择前，不能修改轮转状态。
-	if kind == "" {
-		return
-	}
-	// 状态修改与 notifier 共享同一把轻量锁。
-	r.mu.Lock()
-	// 函数结束统一释放锁。
-	defer r.mu.Unlock()
-	// 失败类型下一轮排到其它两个类型之后再次获得配额。
-	switch kind {
-	case UsageAggregationKindOverview:
-		// Overview 失败后先允许 Activity 运行。
-		r.nextKind = UsageAggregationKindActivity
-	case UsageAggregationKindActivity:
-		// Activity 失败后先允许 Identity 运行。
-		r.nextKind = UsageAggregationKindIdentity
-	case UsageAggregationKindIdentity:
-		// Identity 失败后先允许 Overview 运行，identity cursor 保持原值供后续重试。
-		r.nextKind = UsageAggregationKindOverview
-	}
-}
-
-// flushReadyHeaderSnapshots 只投递 Overview cursor 已覆盖的内存 snapshots，并报告是否需要有界重试。
-func (r *UsageAggregationRunner) flushReadyHeaderSnapshots(ctx context.Context, writeDB *gorm.DB) (bool, error) {
-	// 没有 appender 时 header 功能未启用，聚合本身仍正常运行。
-	if r.headerAppender == nil {
-		return false, nil
-	}
-	// 没有 pending snapshot 时不需要读取 Overview cursor 或占用唯一数据库连接。
-	if !r.hasPendingHeaderSnapshots() {
-		return false, nil
-	}
-	// cursor 必须从已提交 checkpoint 读取，不能使用内存猜测值。
-	overviewCursor, err := repository.UsageOverviewAggregationCursor(ctx, writeDB)
-	// cursor 查询失败时保留全部 snapshots，供下一轮重试。
+func (r *UsageAggregationRunner) deferForInbox(ctx context.Context, writeDB *gorm.DB) (bool, error) {
+	hasInbox, err := repository.HasProcessableRedisUsageInbox(ctx, writeDB)
 	if err != nil {
 		return false, err
 	}
-	// 加锁保证 appender 接收期间同一 auth_index 不被 notifier 替换。
+	return hasInbox, nil
+}
+
+func (r *UsageAggregationRunner) completeRollupRoundIfReadyLocked() {
+	// Rollup 轮次只由三个全局水位结束；Identity 保留自己的代际和分页状态，不能冻结下一批 usage 目标。
+	if !r.activeRound || !r.rollupsReachedTarget {
+		return
+	}
+	completedTarget := r.activeTargetEventID
+	r.activeRound = false
+	r.activeTargetEventID = 0
+	r.rollupsReachedTarget = false
+	// 重复或延迟到达的旧通知不应制造一个没有新数据的 5 秒窗口。
+	if r.pendingTargetEventID <= completedTarget {
+		r.pendingTargetEventID = 0
+	}
+}
+
+func (r *UsageAggregationRunner) advanceAfterFailure(kind UsageAggregationKind) {
+	if kind == "" {
+		return
+	}
 	r.mu.Lock()
-	// 函数结束统一释放 snapshot map 锁。
 	defer r.mu.Unlock()
-	// keys 先收集满足 gate 的 auth_index，后续排序保证投递顺序稳定。
-	keys := make([]string, 0, len(r.pendingHeaders))
-	// 遍历所有等待 snapshot，只选择所需 ID 已被 Overview 覆盖的项。
-	for authIndex, pending := range r.pendingHeaders {
-		// 落后的 Overview cursor 不能提前释放该项。
-		if pending.requiredOverviewEventID > overviewCursor {
-			continue
-		}
-		// 满足 gate 的 key 进入本次投递集合。
-		keys = append(keys, authIndex)
-	}
-	// 没有 ready snapshot 时不调用 quota appender。
-	if len(keys) == 0 {
-		return false, nil
-	}
-	// auth_index 排序使批次行为和 map 迭代随机性无关。
-	sort.Strings(keys)
-	// 按稳定 key 顺序复制 ready snapshots。
-	snapshots := make([]quota.UsageHeaderSnapshot, 0, len(keys))
-	// 每个 key 只追加 map 中的最新 snapshot。
-	for _, authIndex := range keys {
-		// snapshot 已在 notifier 阶段 clone，可直接传给非阻塞 appender。
-		snapshots = append(snapshots, r.pendingHeaders[authIndex].snapshot)
-	}
-	// appender 队列满时返回 false，必须原样保留 map 等待后续重试。
-	if !r.headerAppender.TryAppendUsageHeaderSnapshots(snapshots) {
-		return true, nil
-	}
-	// appender 接受后才删除本次已经投递的 auth_index。
-	for _, authIndex := range keys {
-		// 删除只影响已经越过 Overview gate 且成功入队的 snapshot。
-		delete(r.pendingHeaders, authIndex)
-	}
-	// 所有 ready snapshots 已成功移交 quota worker。
-	return false, nil
-}
-
-func (r *UsageAggregationRunner) flushReadyHeaderSnapshotsOnShutdown(ctx context.Context) {
-	// nil runner 或未配置 appender 时没有关机投递工作。
-	if r == nil || r.headerAppender == nil {
-		return
-	}
-	// 没有 pending snapshot 时无需读取 Overview cursor，避免关闭路径等待唯一数据库连接。
-	if !r.hasPendingHeaderSnapshots() {
-		return
-	}
-	// pending snapshot 的关闭投递是 best-effort，忽略 App cancel 但只等待固定短上限。
-	flushCtx, cancelFlush := boundedUsageAggregationContext(ctx, usageAggregationShutdownFlushTimeout)
-	// 函数退出时释放 shutdown deadline timer。
-	defer cancelFlush()
-	// 关机回读仍属于已提交聚合的收尾，固定 writer 可避免 reader 饱和拖过关闭上限。
-	writeDB := r.db.Clauses(dbresolver.Write).Session(&gorm.Session{Context: flushCtx})
-	// 关闭只尝试一次非阻塞 appender，不进入退避或启动新的聚合事务。
-	retryPending, err := r.flushReadyHeaderSnapshots(flushCtx, writeDB)
-	// 数据库读取失败时保留错误日志；usage 与已提交聚合结果不受影响。
-	if err != nil {
-		logrus.WithError(err).Warn("usage aggregation shutdown header flush failed")
-		return
-	}
-	// appender 拒绝表示 quota worker 队列已满，关闭路径不再等待。
-	if retryPending {
-		logrus.Warn("usage aggregation shutdown header flush skipped because quota queue is full")
+	switch kind {
+	case UsageAggregationKindRollups:
+		r.nextKind = UsageAggregationKindIdentity
+	case UsageAggregationKindIdentity:
+		r.nextKind = UsageAggregationKindRollups
 	}
 }
 
-// hasPendingHeaderSnapshots 只检查关闭路径是否需要访问数据库读取 Overview cursor。
-func (r *UsageAggregationRunner) hasPendingHeaderSnapshots() bool {
-	// nil runner 不持有任何等待快照。
-	if r == nil {
+func (r *UsageAggregationRunner) signalWake() {
+	if r == nil || r.wake == nil {
+		return
+	}
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (r *UsageAggregationRunner) waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
 		return false
+	case <-r.wake:
+		return true
+	case <-timer.C:
+		return true
 	}
-	// pendingHeaders 与前台 notifier 共享，读取长度也必须持有同一把锁。
-	r.mu.Lock()
-	// 长度读取完成立即释放轻量内存锁。
-	defer r.mu.Unlock()
-	// 非空 map 才需要执行 shutdown flush。
-	return len(r.pendingHeaders) > 0
 }
 
 // boundedUsageAggregationContext 忽略 parent cancel，同时保留更早 deadline 并添加最大上限。
 func boundedUsageAggregationContext(parent context.Context, maxDuration time.Duration) (context.Context, context.CancelFunc) {
-	// 调用方都已规范 nil context；这里仍防御性使用 Background。
 	if parent == nil {
 		parent = context.Background()
 	}
-	// WithoutCancel 保留 context values，但让已开始短事务不随 App shutdown 回滚。
 	base := context.WithoutCancel(parent)
-	// 最大 deadline 防止单连接获取或 SQLite 调用无限等待。
 	deadline := time.Now().Add(maxDuration)
-	// caller 自己设置的更早 deadline 必须保留，不能被 WithoutCancel 静默删除。
 	if parentDeadline, ok := parent.Deadline(); ok && parentDeadline.Before(deadline) {
 		deadline = parentDeadline
 	}
-	// 返回可释放 timer 的有界 detached context。
 	return context.WithDeadline(base, deadline)
 }

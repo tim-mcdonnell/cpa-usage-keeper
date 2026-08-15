@@ -47,9 +47,31 @@ describe('pricing rule translations', () => {
     expect(i18n.getResourceBundle('zh-TW', 'translation').usage_stats.model_price_rules_remove).toBe('刪除')
   })
 
+  it('localizes rule field labels and validation in Chinese', () => {
+    const zh = i18n.getResourceBundle('zh', 'translation').usage_stats
+    const zhTW = i18n.getResourceBundle('zh-TW', 'translation').usage_stats
+
+    expect(zh.model_price_rules_key).toBe('字段')
+    expect(zh.model_price_rules_value).toBe('设定值')
+    expect(zh.model_price_rules_key_required).toBe('请输入字段。')
+    expect(zh.model_price_rules_value_required).toBe('请输入设定值。')
+    expect(zhTW.model_price_rules_key).toBe('欄位')
+    expect(zhTW.model_price_rules_value).toBe('設定值')
+    expect(zhTW.model_price_rules_key_required).toBe('請輸入欄位。')
+    expect(zhTW.model_price_rules_value_required).toBe('請輸入設定值。')
+  })
+
   it('labels the approved help examples in every supported language', () => {
     expect(i18n.getResourceBundle('en', 'translation').usage_stats.model_price_rules_help_examples).toBe('Examples:')
     expect(i18n.getResourceBundle('zh', 'translation').usage_stats.model_price_rules_help_examples).toBe('示例：')
     expect(i18n.getResourceBundle('zh-TW', 'translation').usage_stats.model_price_rules_help_examples).toBe('範例：')
+  })
+
+  it('capitalizes every word in English price sync actions only', () => {
+    expect(i18n.t('usage_stats.model_price_sync_select_all', { lng: 'en' })).toBe('Select All')
+    expect(i18n.t('usage_stats.model_price_sync_select_none', { lng: 'en' })).toBe('Clear Selection')
+    expect(i18n.t('usage_stats.model_price_sync_update_selected', { lng: 'en', count: 3 })).toBe('Update Selected (3)')
+    expect(i18n.t('usage_stats.model_price_sync_update_selected', { lng: 'zh', count: 3 })).toBe('更新所选（3）')
+    expect(i18n.t('usage_stats.model_price_sync_update_selected', { lng: 'zh-TW', count: 3 })).toBe('更新所選（3）')
   })
 })

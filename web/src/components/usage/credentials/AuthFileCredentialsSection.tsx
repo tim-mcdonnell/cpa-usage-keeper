@@ -2,19 +2,22 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner'
+import { MainActionButton } from '@/components/ui/MainActionButton'
 import { Modal } from '@/components/ui/Modal'
+import { PortalTooltip, usePortalTooltip } from '@/components/ui/PortalTooltip'
 import { IconChartLine, IconGaugeReset, IconInfo, IconRefreshCw, IconSearch, IconSettings, IconShield, IconTrash2 } from '@/components/ui/icons'
 import quotaCostIcon from '@/assets/icons/quota-cost.svg'
 import quotaTokenIcon from '@/assets/icons/quota-token.svg'
 import styles from './CredentialSections.module.scss'
-import type { AuthFileCredentialRow, DisplayQuota, PlanTypeTone, QuotaCapacityFlag, QuotaUsageMode, QuotaWindowUsageDisplay } from './credentialViewModels'
+import type { AuthFileCredentialRow, DisplayQuota, QuotaCapacityFlag, QuotaUsageMode, QuotaWindowUsageDisplay } from './credentialViewModels'
 import { deleteAuthFiles, fetchQuotaAutoRefreshSettings, fetchUsageQuotaResetCredits, setAuthFilesDisabled, updateQuotaAutoRefreshSettings, type UsageIdentityPageSort } from '@/lib/api'
 import type { QuotaAutoRefreshScheduleUnit, QuotaAutoRefreshSettings, UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse, UsageQuotaResetCreditsResponse } from '@/lib/types'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
 import { CapacityDetailModal, type CapacityDetailModalTarget } from './CapacityDetailModal'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
-import { CredentialProviderFilterIcon } from './CredentialProviderFilterBar'
-import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, capitalize, credentialToneClassName, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { CredentialSubscriptionBadge } from './CredentialSubscriptionBadge'
+import { CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, capitalize, credentialToneClassName, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { ProviderBrandIcon } from '@/components/ProviderBrandIcon'
 
 type Translate = (key: string, options?: Record<string, string>) => string
 type InspectionIndicatorTone = 'idle' | 'running' | 'completed'
@@ -122,6 +125,18 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
   const quotaUsageMode = controlledQuotaUsageMode ?? localQuotaUsageMode
   const [displayMode, setDisplayModeState] = useState<AuthFileDisplayMode>(() => readStoredAuthFileDisplayMode())
   const [expiryTooltip, setExpiryTooltip] = useState<CredentialExpiryTooltipState | null>(null)
+  const {
+    tooltip: filenameTooltip,
+    showOnMouseEnter: showFilenameTooltipOnMouseEnter,
+    hideOnMouseLeave: hideFilenameTooltipOnMouseLeave,
+    showOnFocus: showFilenameTooltipOnFocus,
+    hideOnBlur: hideFilenameTooltipOnBlur,
+    dismiss: dismissFilenameTooltip,
+  } = usePortalTooltip()
+  const filenameTooltipRowsVersion = rows
+    .map((row) => `${row.identity.id || row.identity.identity}\u0000${row.identity.file_name?.trim() ?? ''}`)
+    .sort()
+    .join('\u0001')
   const expiryTooltipHoverTargetRef = useRef<CredentialExpiryTooltipTarget | null>(null)
   const expiryTooltipFocusTargetRef = useRef<CredentialExpiryTooltipTarget | null>(null)
   const showHealthMode = displayMode === 'health'
@@ -177,6 +192,11 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
   }, [positionExpiryTooltip])
 
   useEffect(() => {
+    // 当前页文件映射变化时清理旧事件快照；统计刷新但映射不变时保留正在查看的 tooltip。
+    dismissFilenameTooltip()
+  }, [dismissFilenameTooltip, filenameTooltipRowsVersion])
+
+  useEffect(() => {
     window.addEventListener('resize', syncExpiryTooltip)
     window.addEventListener('scroll', syncExpiryTooltip, true)
     return () => {
@@ -212,34 +232,25 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
         )}
         actions={(
           <div className={styles.credentialSectionActionButtons}>
-            <div className={`${styles.credentialRefreshSwitcher} ${styles.credentialInspectionSwitcher}`.trim()}>
-              <button
-                type="button"
-                className={`${styles.credentialRefreshButton} ${styles.credentialRefreshButtonActive} ${styles.credentialInspectionButton}`.trim()}
-                onClick={openInspection}
-                aria-pressed={inspectionTone !== 'idle'}
-              >
-                <span className={styles.credentialRefreshButtonInner}>
-                  <IconSearch size={12} />
-                  <span>{t('usage_stats.credentials_inspection_open')}</span>
-                  {inspectionTone !== 'idle' && <span className={`${styles.credentialInspectionDot} ${styles[`credentialInspectionDot${capitalize(inspectionTone)}`]}`.trim()} aria-hidden="true" />}
-                </span>
-              </button>
-            </div>
-            <div className={styles.credentialRefreshSwitcher}>
-              <button
-                type="button"
-                className={`${styles.credentialRefreshButton} ${styles.credentialRefreshButtonActive} ${quotaRefreshing ? styles.credentialRefreshButtonLoading : ''}`.trim()}
-                onClick={() => void onRefreshQuota()}
-                disabled={!canRefresh}
-                aria-busy={quotaRefreshing}
-              >
-                <span className={styles.credentialRefreshButtonInner}>
-                  {quotaRefreshing ? <LoadingSpinner size={12} className={styles.credentialRefreshSpinner} /> : <IconRefreshCw size={12} />}
-                  <span>{quotaRefreshing ? t('usage_stats.credentials_quota_refreshing') : t('usage_stats.credentials_quota_refresh_current_page')}</span>
-                </span>
-              </button>
-            </div>
+            <MainActionButton
+              type="button"
+              className={styles.credentialInspectionButton}
+              onClick={openInspection}
+              aria-pressed={inspectionTone !== 'idle'}
+            >
+              <IconSearch size={12} />
+              <span>{t('usage_stats.credentials_inspection_open')}</span>
+              {inspectionTone !== 'idle' && <span className={`${styles.credentialInspectionDot} ${styles[`credentialInspectionDot${capitalize(inspectionTone)}`]}`.trim()} aria-hidden="true" />}
+            </MainActionButton>
+            <MainActionButton
+              type="button"
+              onClick={() => void onRefreshQuota()}
+              disabled={!canRefresh}
+              loading={quotaRefreshing}
+            >
+              {!quotaRefreshing && <IconRefreshCw size={12} />}
+              <span>{quotaRefreshing ? t('usage_stats.credentials_quota_refreshing') : t('usage_stats.credentials_quota_refresh_current_page')}</span>
+            </MainActionButton>
           </div>
         )}
       >
@@ -266,9 +277,29 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
         const rowExpiryTooltipText = row.expiresAtLabel
           ? t('usage_stats.credentials_expiry_tooltip', { value: row.expiresAtLabel })
           : ''
+        const fileName = row.identity.file_name?.trim() ?? ''
+        const filenameTooltipTargetProps = {
+          className: styles.credentialFileNameTooltipTarget,
+          'data-auth-file-name-tooltip-target': true,
+          tabIndex: fileName ? 0 : undefined,
+          'aria-label': fileName ? `${row.displayName}; ${fileName}` : undefined,
+          onMouseEnter: fileName
+            ? (event: React.MouseEvent<HTMLSpanElement>) => showFilenameTooltipOnMouseEnter([fileName], event.currentTarget)
+            : undefined,
+          onMouseLeave: fileName
+            ? (event: React.MouseEvent<HTMLSpanElement>) => hideFilenameTooltipOnMouseLeave(event.currentTarget)
+            : undefined,
+          onFocus: fileName
+            ? (event: React.FocusEvent<HTMLSpanElement>) => showFilenameTooltipOnFocus([fileName], event.currentTarget)
+            : undefined,
+          onBlur: fileName
+            ? (event: React.FocusEvent<HTMLSpanElement>) => hideFilenameTooltipOnBlur(event.currentTarget)
+            : undefined,
+        }
         return (
           <CredentialRowShell
             key={rowKey}
+            icon={<ProviderBrandIcon providerType={row.identity.type} size={30} ariaLabel={row.typeLabel} />}
             title={onSaveAlias ? (
               <CredentialAliasEditor
                 identityId={row.identity.id}
@@ -276,13 +307,13 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
                 alias={row.identity.alias}
                 saving={aliasSavingId === row.identity.id}
                 disabled={isCredentialAliasEditorDisabled(row.identity.id, row.identity.is_deleted, aliasSavingId)}
+                displayNameProps={filenameTooltipTargetProps}
                 onSaveAlias={onSaveAlias}
               />
-            ) : row.displayName}
-            subtitle={(
+            ) : <span {...filenameTooltipTargetProps}>{row.displayName}</span>}
+            subtitle={row.subscriptionBadge || row.remainingDaysLabel || row.priorityLabel ? (
               <span className={styles.credentialIdentityBadges}>
-                <CredentialBadge>{row.typeLabel}</CredentialBadge>
-                {row.planTypeLabel && <CredentialPlanBadge tone={row.planTypeTone}>{row.planTypeLabel}</CredentialPlanBadge>}
+                {row.subscriptionBadge && <CredentialSubscriptionBadge model={row.subscriptionBadge} />}
                 {row.remainingDaysLabel && row.expiresAtLabel
                   ? (
                     <span
@@ -316,7 +347,7 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
                   : row.remainingDaysLabel && <span className={styles.credentialRemainingDaysBadge}>{row.remainingDaysLabel}</span>}
                 {row.priorityLabel && <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>}
               </span>
-            )}
+            ) : undefined}
             badges={null}
             metrics={(
               <>
@@ -392,6 +423,7 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
         onSortChange={(nextSort) => onSortChange(nextSort as UsageIdentityPageSort)}
       />
       </CredentialSectionShell>
+      <PortalTooltip tooltip={filenameTooltip} />
       {expiryTooltip && activeExpiryTooltipText && typeof document !== 'undefined'
         ? createPortal(
             <div
@@ -1491,7 +1523,7 @@ function InspectionResultRow({ result }: { result: UsageQuotaInspectionResult })
   return (
     <div className={styles.credentialInspectionResultRow}>
       <span className={styles.credentialInspectionTypeIcon}>
-        <CredentialProviderFilterIcon provider={result.type} />
+        <ProviderBrandIcon providerType={result.type} size={20} />
       </span>
       <span className={styles.credentialInspectionIdentity}>
         <strong>{result.name || result.file_name || '-'}</strong>
@@ -1547,10 +1579,6 @@ export function formatInspectionCompletedAt(value: string | undefined): string {
 
 function formatInspectionDate(value: string | undefined): string {
   return formatInspectionCompletedAt(value)
-}
-
-function CredentialPlanBadge({ children, tone = 'neutral' }: { children: string; tone?: PlanTypeTone }) {
-  return <span className={`${styles.credentialPlanBadge} ${styles[`credentialPlanBadge${capitalize(tone)}`]}`.trim()}>{children}</span>
 }
 
 function QuotaUsageModeSwitch({ label, mode, onChange }: { label: string; mode: QuotaUsageMode; onChange: (mode: QuotaUsageMode) => void }) {

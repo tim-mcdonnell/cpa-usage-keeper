@@ -23,22 +23,30 @@ type recordingUsageAggregationNotifier struct {
 	identityCalls int
 	// events 保存 notifier 收到的已提交 usage events。
 	events []entities.UsageEvent
-	// snapshots 保存与已提交事件对应的 quota snapshots。
-	snapshots []quota.UsageHeaderSnapshot
 }
 
-func (n *recordingUsageAggregationNotifier) NotifyUsageEventsCommitted(events []entities.UsageEvent, snapshots []quota.UsageHeaderSnapshot) {
+func (n *recordingUsageAggregationNotifier) NotifyUsageEventsCommitted(events []entities.UsageEvent) {
 	// 测试 recorder 复制输入，避免 service 后续复用切片影响断言。
 	n.usageCalls++
 	// events 必须已经带有数据库分配的自增 ID。
 	n.events = append(n.events, events...)
-	// snapshots 只包含本批真正提交事件对应的值。
-	n.snapshots = append(n.snapshots, snapshots...)
 }
 
 func (n *recordingUsageAggregationNotifier) NotifyUsageIdentitiesChanged() {
 	// metadata notifier 只记录轻量唤醒，不主动执行任何聚合。
 	n.identityCalls++
+}
+
+type recordingUsageHeaderSnapshotAppender struct {
+	calls     int
+	snapshots []quota.UsageHeaderSnapshot
+}
+
+func (a *recordingUsageHeaderSnapshotAppender) TryAppendUsageHeaderSnapshots(snapshots []quota.UsageHeaderSnapshot) bool {
+	// Header 接收方和聚合 notifier 独立，测试保留原始批次顺序和重复身份。
+	a.calls++
+	a.snapshots = append(a.snapshots, snapshots...)
+	return true
 }
 
 func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t *testing.T) {
@@ -63,10 +71,12 @@ func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t
 		t.Fatalf("seed async aggregation inbox: %v", err)
 	}
 	notifier := &recordingUsageAggregationNotifier{}
+	headerAppender := &recordingUsageHeaderSnapshotAppender{}
 	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
 		BaseURL:                  "https://cpa.example.com",
 		Now:                      func() time.Time { return now },
 		UsageAggregationNotifier: notifier,
+		UsageHeaderQuota:         headerAppender,
 	})
 
 	// 执行：处理 inbox；返回前只允许提交 usage_events、processed 状态和内存通知。
@@ -82,8 +92,8 @@ func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t
 	if notifier.usageCalls != 1 || len(notifier.events) != 1 || notifier.events[0].ID <= 0 {
 		t.Fatalf("expected one committed event notification with ID, got calls=%d events=%+v", notifier.usageCalls, notifier.events)
 	}
-	if len(notifier.snapshots) != 1 || notifier.snapshots[0].AuthIndex != "auth-a" {
-		t.Fatalf("expected committed header snapshot notification, got %+v", notifier.snapshots)
+	if headerAppender.calls != 1 || len(headerAppender.snapshots) != 1 || headerAppender.snapshots[0].AuthIndex != "auth-a" {
+		t.Fatalf("expected independent committed header snapshot append, got calls=%d snapshots=%+v", headerAppender.calls, headerAppender.snapshots)
 	}
 	var inbox entities.RedisUsageInbox
 	if err := db.First(&inbox, rows[0].ID).Error; err != nil {
@@ -96,16 +106,23 @@ func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t
 }
 
 func TestProcessRedisUsageInboxEmptyBatchKeepsLegacyCatchUpWithoutNotifier(t *testing.T) {
-	// 准备：直接写入一个尚未聚合的 raw event，并使用没有 notifier 的兼容构造路径。
+	// 准备：直接写入一个尚未聚合的身份事件，并使用没有后台 Runner 的兼容构造路径。
 	db := openUsageAggregationFlowDatabase(t)
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	events := []entities.UsageEvent{{EventKey: "empty-no-catchup", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(-time.Minute), InputTokens: 10, TotalTokens: 10}}
+	identity := entities.UsageIdentity{Name: "compat-auth", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "compat-auth", Type: "codex"}
+	if err := db.Create(&identity).Error; err != nil {
+		t.Fatalf("insert compatibility identity: %v", err)
+	}
+	events := []entities.UsageEvent{{
+		EventKey: "empty-no-catchup", APIGroupKey: "provider-a", Model: "model-a", AuthType: "oauth", AuthIndex: identity.Identity,
+		Timestamp: now.Add(-time.Minute), InputTokens: 10, TotalTokens: 10,
+	}}
 	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
 		t.Fatalf("insert pending raw event: %v", err)
 	}
 	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{BaseURL: "https://cpa.example.com", Now: func() time.Time { return now }})
 
-	// 执行：空 inbox 轮次通过兼容 fallback 追平旧 Overview 和新 Activity。
+	// 执行：空 inbox 轮次通过兼容 fallback 追平三类全局水位和 Identity 自己的水位。
 	result, err := syncService.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
 		t.Fatalf("empty ProcessRedisUsageInbox returned error: %v", err)
@@ -115,16 +132,27 @@ func TestProcessRedisUsageInboxEmptyBatchKeepsLegacyCatchUpWithoutNotifier(t *te
 	if result == nil || !result.Empty || result.ProcessedRows != 0 {
 		t.Fatalf("unexpected empty process result: %+v", result)
 	}
-	var overviewCheckpoint entities.UsageOverviewAggregationCheckpoint
-	if err := db.Where("name = ?", "overview").Take(&overviewCheckpoint).Error; err != nil {
+	var overviewCheckpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointOverview).Take(&overviewCheckpoint).Error; err != nil {
 		t.Fatalf("load fallback overview checkpoint: %v", err)
 	}
-	var activityCheckpoint entities.UsageActivityAggregationCheckpoint
-	if err := db.Where("name = ?", "activity").Take(&activityCheckpoint).Error; err != nil {
+	var activityCheckpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointActivity).Take(&activityCheckpoint).Error; err != nil {
 		t.Fatalf("load fallback activity checkpoint: %v", err)
 	}
-	if overviewCheckpoint.LastAggregatedUsageEventID != 1 || activityCheckpoint.LastAggregatedUsageEventID != 1 {
-		t.Fatalf("expected fallback checkpoints at 1, got overview=%+v activity=%+v", overviewCheckpoint, activityCheckpoint)
+	var latencyCheckpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointLatency).Take(&latencyCheckpoint).Error; err != nil {
+		t.Fatalf("load fallback latency checkpoint: %v", err)
+	}
+	if overviewCheckpoint.LastAggregatedUsageEventID != 1 || activityCheckpoint.LastAggregatedUsageEventID != 1 || latencyCheckpoint.LastAggregatedUsageEventID != 1 {
+		t.Fatalf("expected all fallback checkpoints at 1, got overview=%+v activity=%+v latency=%+v", overviewCheckpoint, activityCheckpoint, latencyCheckpoint)
+	}
+	var updatedIdentity entities.UsageIdentity
+	if err := db.First(&updatedIdentity, identity.ID).Error; err != nil {
+		t.Fatalf("load fallback identity: %v", err)
+	}
+	if updatedIdentity.LastAggregatedUsageEventID != 1 || updatedIdentity.TotalRequests != 1 {
+		t.Fatalf("expected fallback identity to catch up, got %+v", updatedIdentity)
 	}
 }
 
@@ -173,11 +201,11 @@ func openUsageAggregationFlowDatabase(t *testing.T) *gorm.DB {
 }
 
 func assertUsageAggregationFlowOverviewCheckpointMissing(t *testing.T, db *gorm.DB) {
-	// 准备：只统计固定 name=overview 的旧 checkpoint。
+	// 准备：只统计通用表中的固定 name=overview 行。
 	t.Helper()
 	var count int64
 	// 执行：读取 checkpoint 行数，不触发任何创建逻辑。
-	if err := db.Model(&entities.UsageOverviewAggregationCheckpoint{}).Where("name = ?", "overview").Count(&count).Error; err != nil {
+	if err := db.Model(&entities.UsageAggregationCheckpoint{}).Where("name = ?", entities.UsageAggregationCheckpointOverview).Count(&count).Error; err != nil {
 		t.Fatalf("count overview checkpoints: %v", err)
 	}
 	// 断言：同步热路径没有创建或推进 Overview checkpoint。

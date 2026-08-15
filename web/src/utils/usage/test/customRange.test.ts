@@ -22,6 +22,18 @@ describe('custom usage range slots', () => {
     expect(slots.at(-1)?.value).toBe('2026-07-17');
   });
 
+  it('supports a page-specific 90-day calendar boundary', () => {
+    const slots = buildCustomDaySlots({
+      nowMs: SHANGHAI_NOW,
+      timeZone: 'Asia/Shanghai',
+      maxDayRangeDays: 90,
+    });
+
+    expect(slots).toHaveLength(90);
+    expect(slots[0].value).toBe('2026-04-19');
+    expect(slots.at(-1)?.value).toBe('2026-07-17');
+  });
+
   it('localizes the custom calendar weekday headings', () => {
     expect(buildCustomWeekdayLabels('en-US')).toEqual(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
     expect(buildCustomWeekdayLabels('zh-CN')).toEqual(['周日', '周一', '周二', '周三', '周四', '周五', '周六']);

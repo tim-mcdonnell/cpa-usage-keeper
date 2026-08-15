@@ -165,12 +165,15 @@ func TestOpenDatabaseCreatesUsageActivitySchema(t *testing.T) {
 	}
 	closeUsageActivityTestDatabase(t, db)
 
-	// 断言：Activity 两张表、精确字段集合和三个索引顺序都符合数据契约。
+	// 断言：Activity stats 与通用 checkpoint 表、精确字段集合和三个索引顺序都符合数据契约。
 	if !db.Migrator().HasTable(&entities.UsageActivityStat{}) {
 		t.Fatal("expected usage_activity_stats table")
 	}
-	if !db.Migrator().HasTable(&entities.UsageActivityAggregationCheckpoint{}) {
-		t.Fatal("expected usage_activity_aggregation_checkpoints table")
+	if !db.Migrator().HasTable(&entities.UsageAggregationCheckpoint{}) {
+		t.Fatal("expected usage_aggregation_checkpoints table")
+	}
+	if db.Migrator().HasTable(&entities.UsageActivityAggregationCheckpoint{}) {
+		t.Fatal("did not expect legacy usage_activity_aggregation_checkpoints table")
 	}
 
 	columnTypes, err := db.Migrator().ColumnTypes(&entities.UsageActivityStat{})

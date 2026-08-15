@@ -37,10 +37,13 @@ type tokenProcessorHeaderRecorder struct {
 	snapshots []quota.UsageHeaderSnapshot
 }
 
-func (r *tokenProcessorHeaderRecorder) NotifyUsageEventsCommitted(_ []entities.UsageEvent, snapshots []quota.UsageHeaderSnapshot) {
-	// 只记录事务提交后真正通知的 snapshot，用于证明 unresolved 行没有提前泄漏。
+func (r *tokenProcessorHeaderRecorder) NotifyUsageEventsCommitted(_ []entities.UsageEvent) {}
+
+func (r *tokenProcessorHeaderRecorder) TryAppendUsageHeaderSnapshots(snapshots []quota.UsageHeaderSnapshot) bool {
+	// 只记录事务提交后真正投递的 snapshot，用于证明 unresolved 行没有提前泄漏。
 	r.calls++
 	r.snapshots = append(r.snapshots, snapshots...)
+	return true
 }
 
 func (r *tokenProcessorHeaderRecorder) NotifyUsageIdentitiesChanged() {}
@@ -170,6 +173,7 @@ func TestProcessRedisUsageInboxCommitsReadyItemsWhenIdentityLookupFails(t *testi
 		BaseURL:                  "https://cpa.example.com",
 		RecentUsageEvents:        recent,
 		UsageAggregationNotifier: headers,
+		UsageHeaderQuota:         headers,
 	})
 
 	result, err := syncService.ProcessRedisUsageInbox(context.Background())

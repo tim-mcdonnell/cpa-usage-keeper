@@ -25,9 +25,12 @@ const chartCapture = vi.hoisted(() => ({
 
 vi.mock('react-chartjs-2', () => ({
   Bar: (props: { data: ChartData<'bar', Array<number | null>, string>; options: ChartOptions<'bar'>; plugins?: Plugin<'bar'>[] }) => {
-    chartCapture.barData = props.data;
-    chartCapture.barOptions = props.options;
-    chartCapture.barPlugins = props.plugins;
+    // 既有断言只观察首个 Token Usage 图，后续 Analysis 柱图不能覆盖该捕获值。
+    if (chartCapture.barData === null) {
+      chartCapture.barData = props.data;
+      chartCapture.barOptions = props.options;
+      chartCapture.barPlugins = props.plugins;
+    }
     return React.createElement('div');
   },
   Doughnut: (props: { data: ChartData<'doughnut', number[], string>; options: ChartOptions<'doughnut'>; plugins?: Plugin<'doughnut'>[] }) => {
@@ -1459,8 +1462,8 @@ describe('AnalysisPanel token chart data', () => {
     expect(markup).toMatch(/Unpriced Key[\s\S]*\$0\.0000/);
     expect(markup).toContain('usage_stats.cost_need_price');
     expect(markup).toContain('<div class="_cardTitleLine_');
-    expect(markup).toContain('<h2>usage_stats.analysis_token_usage_title</h2><small class="_costHeaderHint_');
-    expect(markup).toContain('</small></div><p>usage_stats.analysis_token_usage_subtitle</p>');
+    expect(markup).toContain('<h2 class="keeper-card-title">usage_stats.analysis_token_usage_title</h2><small class="_costHeaderHint_');
+    expect(markup).toContain('</small></div><p class="keeper-card-subtitle">usage_stats.analysis_token_usage_subtitle</p>');
     expect(markup).not.toContain('usage_stats.analysis_token_usage_subtitle (usage_stats.cost_need_price)');
     expect(markup.match(/costHeaderHint/g)?.length).toBe(5);
     expect(markup).not.toContain('costWarning');
@@ -1497,7 +1500,7 @@ describe('AnalysisPanel token chart data', () => {
 
     const costDataset = chartCapture.barData?.datasets.find((dataset) => dataset.label === 'usage_stats.total_cost');
     expect(costDataset?.data).toEqual([9]);
-    expect(markup).toContain('<h2>usage_stats.analysis_cost_breakdown_title</h2><small class="_costHeaderHint_');
+    expect(markup).toContain('<h2 class="keeper-card-title">usage_stats.analysis_cost_breakdown_title</h2><small class="_costHeaderHint_');
     expect(markup).toContain('usage_stats.cost_need_price');
     expect(markup).toContain('usage_stats.total_cost</span><strong>$9.00</strong>');
     expect(markup).toContain('usage_stats.analysis_cost_per_million_tokens</span><strong>$8,181.82</strong>');

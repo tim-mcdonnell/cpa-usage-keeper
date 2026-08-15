@@ -25,14 +25,14 @@ func TestUsageAggregationRunnerPreservesExistingOverviewAndIdentityFinalSnapshot
 	seedUsageAggregationParityDatabase(t, baselineDB, now)
 	seedUsageAggregationParityDatabase(t, runnerDB, now)
 
-	// 执行：基准库调用当前完整 catch-up，候选库按 Runner 的 Overview→Activity→Identity 有界事务轮转。
+	// 执行：基准库调用当前完整 catch-up，候选库按 Runner 的 rollups→Identity 有界 turn 轮转。
 	if err := repository.AggregateUsageOverviewStats(context.Background(), baselineDB, now); err != nil {
 		t.Fatalf("aggregate baseline overview: %v", err)
 	}
 	if err := repository.AggregateUsageIdentityStats(context.Background(), baselineDB, now); err != nil {
 		t.Fatalf("aggregate baseline identities: %v", err)
 	}
-	runner := poller.NewUsageAggregationRunner(runnerDB, nil)
+	runner := poller.NewUsageAggregationRunner(runnerDB)
 	for transaction := 0; transaction < 6; transaction++ {
 		if _, err := runner.RunOnce(context.Background()); err != nil {
 			t.Fatalf("runner transaction %d: %v", transaction+1, err)
@@ -200,8 +200,8 @@ func loadUsageAggregationParitySnapshot(t *testing.T, db *gorm.DB) usageAggregat
 		t.Fatalf("load parity daily rows: %v", err)
 	}
 	// 执行：读取唯一 Overview checkpoint。
-	var checkpoint entities.UsageOverviewAggregationCheckpoint
-	if err := db.Where("name = ?", "overview").Take(&checkpoint).Error; err != nil {
+	var checkpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointOverview).Take(&checkpoint).Error; err != nil {
 		t.Fatalf("load parity overview checkpoint: %v", err)
 	}
 	// 执行：按稳定 identity 业务键读取 active/deleted 行。

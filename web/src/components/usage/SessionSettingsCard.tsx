@@ -36,6 +36,10 @@ function getSessionDisplayName(session: AuthManagedSessionItem, t: (key: string)
   return session.label || session.displayKey || t('usage_stats.session_settings_unknown_api_key');
 }
 
+function getSessionClientLabel(session: AuthManagedSessionItem, t: (key: string) => string) {
+  return session.userAgent || t('usage_stats.session_settings_unknown_value');
+}
+
 export function SessionSettingsCard({ sessions, loading = false, revokingId = null, onLogout }: SessionSettingsCardProps) {
   const { t } = useTranslation();
   const [confirmingSession, setConfirmingSession] = useState<AuthManagedSessionItem | null>(null);
@@ -55,12 +59,8 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
 
   return (
     <Card
-      title={
-        <div className={styles.sectionTitleBlock}>
-          <h3 className={styles.sectionTitle}>{t('usage_stats.session_settings_title')}</h3>
-          <p className={styles.sectionSubtitle}>{t('usage_stats.session_settings_subtitle')}</p>
-        </div>
-      }
+      title={t('usage_stats.session_settings_title')}
+      subtitle={t('usage_stats.session_settings_subtitle')}
       className={`${styles.detailsFixedCard} ${styles.sessionSettingsCard}`}
     >
       <div ref={sessionSettingsBodyRef} className={styles.sessionSettingsBody}>
@@ -73,10 +73,37 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
             {sessions.map((session) => {
               const isAdmin = session.kind === 'admin';
               const displayName = getSessionDisplayName(session, t);
+              const clientLabel = getSessionClientLabel(session, t);
               const sourceLabel = session.source === 'embed'
                 ? t('usage_stats.session_settings_source_embed')
                 : t('usage_stats.session_settings_source_standard');
               const disabled = revokingId === session.id;
+              // 详情项交给 CSS Grid 按可用宽度铺开，额外的最近 IP 不占用固定列。
+              const details = [
+                {
+                  key: 'login-ip',
+                  label: t('usage_stats.session_settings_login_ip'),
+                  value: session.loginIp || t('usage_stats.session_settings_unknown_value'),
+                },
+                ...(session.lastSeenIp && session.lastSeenIp !== session.loginIp
+                  ? [{ key: 'last-seen-ip', label: t('usage_stats.session_settings_last_seen_ip'), value: session.lastSeenIp }]
+                  : []),
+                {
+                  key: 'last-seen-at',
+                  label: t('usage_stats.session_settings_last_seen_at'),
+                  value: session.lastSeenAt ?? session.loginAt ?? '-',
+                },
+                {
+                  key: 'login-at',
+                  label: t('usage_stats.session_settings_login_at'),
+                  value: session.loginAt ?? '-',
+                },
+                {
+                  key: 'expires-at',
+                  label: t('usage_stats.session_settings_expires_at'),
+                  value: session.expiresAt ?? '-',
+                },
+              ];
               return (
                 <div key={session.id} className={styles.sessionSettingsItem}>
                   <div className={styles.sessionSettingsSummary}>
@@ -93,17 +120,26 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
                       <span className={styles.sessionSettingsSource}>{sourceLabel}</span>
                     </div>
                   </div>
-                  <div className={styles.sessionSettingsDetails}>
-                    <span>{t('usage_stats.session_settings_login_at', { value: session.loginAt ?? '-' })}</span>
-                    <span>{t('usage_stats.session_settings_expires_at', { value: session.expiresAt ?? '-' })}</span>
+                  <div className={styles.sessionSettingsClient}>
+                    <span className={styles.sessionSettingsClientLabel}>{t('usage_stats.session_settings_user_agent')}</span>
+                    <span className={styles.sessionSettingsClientValue}>{clientLabel}</span>
                   </div>
+                  <dl className={styles.sessionSettingsDetails}>
+                    {details.map((detail) => (
+                      <div key={detail.key} className={styles.sessionSettingsDetailItem}>
+                        <dt className={styles.sessionSettingsDetailLabel}>{detail.label}</dt>
+                        <dd className={styles.sessionSettingsDetailValue}>{detail.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
                   <div className={styles.sessionSettingsActions}>
                     {!session.current && (
                       <Button
                         type="button"
                         variant="danger"
                         size="sm"
-                        className={`${styles.usagePillAction} ${styles.settingsCompactAction} ${styles.usagePillActionDanger} ${styles.sessionSettingsLogoutButton}`.trim()}
+                        appearance="action"
+                        className={styles.sessionSettingsLogoutButton}
                         onClick={() => setConfirmingSession(session)}
                         disabled={disabled}
                         aria-label={t('usage_stats.session_settings_logout_one')}
@@ -126,10 +162,10 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
           closeDisabled={confirmingRevoking}
           footer={
             <>
-              <Button type="button" variant="secondary" className={styles.usagePillAction} onClick={() => setConfirmingSession(null)} disabled={confirmingRevoking}>
+              <Button type="button" variant="secondary" appearance="action" onClick={() => setConfirmingSession(null)} disabled={confirmingRevoking}>
                 {t('common.cancel')}
               </Button>
-              <Button type="button" variant="danger" className={`${styles.usagePillAction} ${styles.usagePillActionDanger}`} onClick={() => void handleConfirmLogout()} loading={confirmingRevoking}>
+              <Button type="button" variant="danger" appearance="action" onClick={() => void handleConfirmLogout()} loading={confirmingRevoking}>
                 {confirmingRevoking ? t('usage_stats.session_settings_logging_out') : t(confirmationKeys.confirmKey)}
               </Button>
             </>

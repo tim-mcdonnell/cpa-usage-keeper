@@ -26,6 +26,8 @@ type usageEventsResponse struct {
 	Page       int                 `json:"page"`
 	PageSize   int                 `json:"page_size"`
 	TotalPages int                 `json:"total_pages"`
+	NextCursor string              `json:"next_cursor,omitempty"`
+	HasMore    bool                `json:"has_more"`
 }
 
 type usageSourceFilterOption struct {
@@ -48,6 +50,9 @@ type usageEventPayload struct {
 	ReasoningEffort     string                 `json:"reasoning_effort,omitempty"`
 	ServiceTier         string                 `json:"service_tier,omitempty"`
 	ResponseServiceTier string                 `json:"response_service_tier,omitempty"`
+	ClientIP            *string                `json:"client_ip"`
+	XForwardedFor       *string                `json:"x_forwarded_for"`
+	UserAgent           *string                `json:"user_agent"`
 	ExecutorType        string                 `json:"executor_type,omitempty"`
 	Endpoint            string                 `json:"endpoint,omitempty"`
 	Source              string                 `json:"source"`
@@ -109,6 +114,9 @@ type usageEventExportPayload struct {
 	ReasoningEffort     string   `json:"reasoning_effort"`
 	ServiceTier         string   `json:"service_tier"`
 	ResponseServiceTier string   `json:"response_service_tier"`
+	ClientIP            *string  `json:"client_ip"`
+	XForwardedFor       *string  `json:"x_forwarded_for"`
+	UserAgent           *string  `json:"user_agent"`
 	ExecutorType        string   `json:"executor_type"`
 	Result              string   `json:"result"`
 	Endpoint            string   `json:"endpoint"`
@@ -190,12 +198,19 @@ func registerUsageEventsRoute(
 		if err != nil {
 			return
 		}
+		nextCursor := ""
+		if filter.CursorMode && rows.HasMore && len(rows.Events) > 0 {
+			lastEvent := rows.Events[len(rows.Events)-1]
+			nextCursor = encodeUsageEventsCursor(lastEvent.Timestamp, lastEvent.ID)
+		}
 		c.JSON(http.StatusOK, usageEventsResponse{
 			Events:     buildUsageEventsPayload(rows.Events, resolver, apiKeyInfos),
 			TotalCount: rows.TotalCount,
 			Page:       rows.Page,
 			PageSize:   rows.PageSize,
 			TotalPages: rows.TotalPages,
+			NextCursor: nextCursor,
+			HasMore:    rows.HasMore,
 		})
 	})
 
@@ -419,6 +434,9 @@ func buildUsageEventsPayload(rows []servicedto.UsageEventRecord, resolver usageI
 			ReasoningEffort:     strings.TrimSpace(row.ReasoningEffort),
 			ServiceTier:         strings.TrimSpace(row.ServiceTier),
 			ResponseServiceTier: strings.TrimSpace(row.ResponseServiceTier),
+			ClientIP:            row.ClientIP,
+			XForwardedFor:       row.XForwardedFor,
+			UserAgent:           row.UserAgent,
 			ExecutorType:        strings.TrimSpace(row.ExecutorType),
 			Endpoint:            strings.TrimSpace(row.Endpoint),
 			Source:              source,
@@ -508,6 +526,9 @@ func buildUsageEventExportPayload(row servicedto.UsageEventRecord, resolver usag
 		ReasoningEffort:     strings.TrimSpace(row.ReasoningEffort),
 		ServiceTier:         strings.TrimSpace(row.ServiceTier),
 		ResponseServiceTier: strings.TrimSpace(row.ResponseServiceTier),
+		ClientIP:            row.ClientIP,
+		XForwardedFor:       row.XForwardedFor,
+		UserAgent:           row.UserAgent,
 		ExecutorType:        strings.TrimSpace(row.ExecutorType),
 		Result:              result,
 		Endpoint:            strings.TrimSpace(row.Endpoint),
@@ -562,6 +583,9 @@ var usageEventsExportCSVHeader = []string{
 	"ttft_ms",
 	"latency_ms",
 	"speed_tps",
+	"client_ip",
+	"x_forwarded_for",
+	"user_agent",
 	"input_tokens",
 	"output_tokens",
 	"reasoning_tokens",
@@ -756,6 +780,9 @@ func usageEventExportCSVRecord(event usageEventExportPayload) []string {
 		formatOptionalInt64(event.TTFTMS),
 		strconv.FormatInt(event.LatencyMS, 10),
 		formatOptionalFloat64(event.SpeedTPS),
+		formatOptionalCSVText(event.ClientIP),
+		formatOptionalCSVText(event.XForwardedFor),
+		formatOptionalCSVText(event.UserAgent),
 		strconv.FormatInt(event.InputTokens, 10),
 		strconv.FormatInt(event.OutputTokens, 10),
 		strconv.FormatInt(event.ReasoningTokens, 10),
@@ -772,6 +799,24 @@ func formatOptionalInt64(value *int64) string {
 		return ""
 	}
 	return strconv.FormatInt(*value, 10)
+}
+
+func formatOptionalCSVText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	raw := *value
+	candidate := strings.TrimLeft(raw, " \t\r\n")
+	if candidate == "" {
+		return raw
+	}
+	switch candidate[0] {
+	case '=', '+', '-', '@':
+		// CSV 引号不会阻止表格软件解析公式；前置单引号让外部请求元数据按字符串显示。
+		return "'" + raw
+	default:
+		return raw
+	}
 }
 
 func formatOptionalFloat64(value *float64) string {

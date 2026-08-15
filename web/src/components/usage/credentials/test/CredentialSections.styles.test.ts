@@ -7,6 +7,7 @@ const credentialShellSource = readFileSync(new URL('../CredentialSectionShell.ts
 const credentialHealthSource = readFileSync(new URL('../CredentialHealthPanel.tsx', import.meta.url), 'utf8')
 const aiProviderSectionSource = readFileSync(new URL('../AiProviderCredentialsSection.tsx', import.meta.url), 'utf8')
 const authFileSectionSource = readFileSync(new URL('../AuthFileCredentialsSection.tsx', import.meta.url), 'utf8')
+const providerFilterSource = readFileSync(new URL('../CredentialProviderFilterBar.tsx', import.meta.url), 'utf8')
 
 const cssBlock = (selector: string) => {
   const start = credentialStyles.indexOf(selector)
@@ -15,14 +16,59 @@ const cssBlock = (selector: string) => {
   return credentialStyles.slice(start, next === -1 ? undefined : next)
 }
 
+const scssRule = (source: string, selector: string, occurrence = 0) => {
+  let start = -selector.length
+  for (let index = 0; index <= occurrence; index += 1) {
+    start = source.indexOf(selector, start + selector.length)
+    expect(start).toBeGreaterThanOrEqual(0)
+  }
+
+  const openingBrace = source.indexOf('{', start + selector.length)
+  expect(openingBrace).toBeGreaterThan(start)
+  let depth = 1
+  for (let index = openingBrace + 1; index < source.length; index += 1) {
+    if (source[index] === '{') {
+      depth += 1
+    } else if (source[index] === '}' && --depth === 0) {
+      return source.slice(start, index + 1)
+    }
+  }
+  throw new Error(`Unclosed SCSS rule: ${selector}`)
+}
+
 describe('Credential section styles', () => {
+  it('uses the global card contract and a stable credential title track', () => {
+    expect(credentialShellSource).toMatch(/className=\{`\$\{styles\.credentialSectionCard\} keeper-card-surface`\}/)
+    expect(credentialShellSource).toMatch(/className=\{`\$\{styles\.credentialSectionTitleRow\} keeper-card-title-track`\}/)
+    expect(credentialShellSource).toMatch(/className=\{`\$\{styles\.credentialSectionTitle\} keeper-card-title`\}/)
+    expect(credentialShellSource).toMatch(/className=\{`\$\{styles\.credentialSectionSubtitle\} keeper-card-subtitle`\}/)
+
+    expect(credentialStyles).toMatch(/\.credentialSectionHeader\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;/)
+    expect(credentialStyles).toMatch(/\.credentialSectionActions\s*\{[\s\S]*?min-height:\s*var\(--keeper-card-title-track-height\);[\s\S]*?align-items:\s*center;/)
+    expect(credentialStyles).toMatch(/\.credentialSectionTitleRow\s*\{[\s\S]*?flex-wrap:\s*nowrap;/)
+    expect(credentialStyles).toMatch(/\.credentialSectionTitleBlock\s*\{[\s\S]*?min-width:\s*0;/)
+    expect(cssBlock('.credentialSectionTitleBlock')).not.toContain('display: contents;')
+    expect(credentialStyles).toMatch(/\.credentialSectionTitleRow\s*\{[\s\S]*?min-height:\s*34px;/)
+    expect(credentialStyles).toMatch(/\.credentialSectionActions\s*\{[\s\S]*?align-self:\s*flex-end;/)
+    expect(credentialStyles).toMatch(/\.credentialSectionSubtitle\s*\{[\s\S]*?font-size:\s*var\(--keeper-card-subtitle-size\);[\s\S]*?font-weight:\s*var\(--keeper-card-subtitle-weight\);/)
+    expect(credentialStyles).toMatch(/@include mobile\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);[\s\S]*?\.credentialSectionTitleRow\s*\{[\s\S]*?flex-wrap:\s*wrap;/)
+
+    const cardBlock = cssBlock('.credentialSectionCard')
+    expect(cardBlock).not.toContain('border: 1px solid')
+    expect(cardBlock).not.toContain('border-radius: 24px')
+    expect(cardBlock).not.toContain('box-shadow:')
+    expect(authFileSectionSource.match(/<MainActionButton/g)).toHaveLength(2)
+    expect(authFileSectionSource).toContain("import { MainActionButton } from '@/components/ui/MainActionButton'")
+    expect(credentialStyles).not.toContain('.credentialRefreshButton')
+  })
+
   it('keeps Auth Files and AI Provider row sizing separate', () => {
-    expect(credentialStyles).toMatch(/\.authFileCredentialRow\s*\{[\s\S]*?grid-template-columns:\s*236px minmax\(0, 448px\) minmax\(250px, 1fr\);/)
-    expect(credentialStyles).toMatch(/\.authFileCredentialRow\s*\{[\s\S]*?\.credentialIdentityBlock\s*\{[\s\S]*?max-width:\s*236px;/)
+    expect(credentialStyles).toMatch(/\.authFileCredentialRow\s*\{[\s\S]*?grid-template-columns:\s*\$credential-name-column-width minmax\(0, 448px\) minmax\(250px, 1fr\);/)
+    expect(credentialStyles).toMatch(/\.authFileCredentialRow\s*\{[\s\S]*?\.credentialIdentityBlock\s*\{[\s\S]*?max-width:\s*\$credential-name-column-width;/)
     expect(credentialStyles).toMatch(/\.authFileCredentialRow\s*\{[\s\S]*?@include tablet\s*\{[\s\S]*?grid-template-columns:\s*1fr;/)
     expect(credentialStyles).toMatch(/\.authFileCredentialRow\s*\{[\s\S]*?@include mobile\s*\{[\s\S]*?grid-template-columns:\s*1fr;/)
-    expect(credentialStyles).toMatch(/\.aiProviderCredentialRow\s*\{[\s\S]*?grid-template-columns:\s*236px minmax\(0, 448px\) minmax\(250px, 1fr\);/)
-    expect(credentialStyles).toMatch(/\.aiProviderCredentialRow\s*\{[\s\S]*?\.credentialIdentityBlock\s*\{[\s\S]*?max-width:\s*236px;/)
+    expect(credentialStyles).toMatch(/\.aiProviderCredentialRow\s*\{[\s\S]*?grid-template-columns:\s*\$credential-name-column-width minmax\(0, 448px\) minmax\(250px, 1fr\);/)
+    expect(credentialStyles).toMatch(/\.aiProviderCredentialRow\s*\{[\s\S]*?\.credentialIdentityBlock\s*\{[\s\S]*?max-width:\s*\$credential-name-column-width;/)
     expect(credentialStyles).toMatch(/\.aiProviderCredentialRow\s*\{[\s\S]*?@include tablet\s*\{[\s\S]*?grid-template-columns:\s*1fr;/)
     expect(credentialStyles).toMatch(/\.aiProviderCredentialRow\s*\{[\s\S]*?@include mobile\s*\{[\s\S]*?grid-template-columns:\s*1fr;/)
     expect(credentialShellSource).toContain('rowClassName?: string')
@@ -43,6 +89,35 @@ describe('Credential section styles', () => {
     expect(aiProviderSectionSource).toContain('statsUpdatedAt={row.statsUpdatedText}')
     expect(aiProviderSectionSource).not.toContain('DisplayModeSwitch')
     expect(authFileSectionSource).not.toContain('aiProviderCredentialRow')
+  })
+
+  it('passes explicit shared logo sizes and accessible row labels to every context', () => {
+    const filterIconFrameStyles = cssBlock('.credentialProviderFilterIconFrame')
+    const identityBlockStyles = cssBlock('.credentialIdentityBlock')
+    const identityContentStyles = cssBlock('.credentialIdentityContent')
+
+    expect(credentialStyles).toMatch(/\$credential-provider-icon-size:\s*30px;/)
+    expect(filterIconFrameStyles).toContain('width: $credential-provider-icon-size;')
+    expect(filterIconFrameStyles).toContain('height: $credential-provider-icon-size;')
+    expect(filterIconFrameStyles).toMatch(/> svg\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;/)
+    expect(providerFilterSource).toMatch(/<ProviderBrandIcon providerType=\{option\.knownKey \?\? option\.key\} size="100%" \/>/)
+    expect(authFileSectionSource).toMatch(/<ProviderBrandIcon providerType=\{row\.identity\.type\} size=\{30\} ariaLabel=\{row\.typeLabel\} \/>/)
+    expect(aiProviderSectionSource).toMatch(/<ProviderBrandIcon providerType=\{row\.identity\.type\} size=\{30\} ariaLabel=\{row\.typeLabel\} \/>/)
+    expect(authFileSectionSource).toMatch(/<ProviderBrandIcon providerType=\{result\.type\} size=\{20\} \/>/)
+    expect(identityBlockStyles).toContain('display: flex;')
+    expect(identityBlockStyles).toContain('align-items: center;')
+    expect(identityBlockStyles).toContain('gap: $credential-provider-icon-gap;')
+    expect(identityContentStyles).toContain('min-height: 40px;')
+    expect(credentialStyles).not.toMatch(/\.credentialProviderFilterIcon\s*\{/)
+    expect(credentialStyles).not.toMatch(/\.credentialNameProviderIcon\s*\{/)
+    expect(credentialStyles).not.toMatch(/\.credentialInspectionProviderIcon\s*\{/)
+    expect(credentialShellSource).toMatch(/credentialIdentityBlock[\s\S]*?\{icon\}[\s\S]*?credentialIdentityContent[\s\S]*?credentialNameRow[\s\S]*?credentialIdentityText/)
+  })
+
+  it('preserves the pre-logo credential name content width', () => {
+    expect(credentialStyles).toMatch(/\$credential-name-content-width:\s*236px;/)
+    expect(credentialStyles).toMatch(/\$credential-provider-icon-gap:\s*14px;/)
+    expect(credentialStyles).toMatch(/\$credential-name-column-width:\s*\$credential-name-content-width \+ \$credential-provider-icon-size \+ \$credential-provider-icon-gap;/)
   })
 
   it('lets Auth Files quota bars wrap before their blocks overlap', () => {
@@ -223,7 +298,7 @@ describe('Credential section styles', () => {
     expect(credentialStyles).toMatch(/\.credentialPriorityBadge\s*\{[\s\S]*?min-width:\s*22px;/)
     expect(credentialShellSource).toContain('CredentialPriorityBadge')
     expect(authFileSectionSource).toContain('row.priorityLabel')
-    expect(authFileSectionSource).toMatch(/row\.planTypeLabel[\s\S]*?row\.remainingDaysLabel[\s\S]*?row\.priorityLabel/)
+    expect(authFileSectionSource).toMatch(/row\.subscriptionBadge[\s\S]*?row\.remainingDaysLabel[\s\S]*?row\.priorityLabel/)
     expect(aiProviderSectionSource).toContain('row.priorityLabel')
   })
 
@@ -240,6 +315,7 @@ describe('Credential section styles', () => {
   })
 
   it('keeps credential alias edit buttons in a fixed name-cell action slot', () => {
+    expect(credentialStyles).toMatch(/\.credentialNameMain\s*\{[\s\S]*?display:\s*flex;[\s\S]*?gap:\s*8px;[\s\S]*?width:\s*100%;/)
     expect(credentialStyles).toMatch(/\.credentialDisplayName\s*\{[\s\S]*?width:\s*100%;/)
     expect(credentialStyles).toMatch(/\.credentialAliasEditor\s*\{[\s\S]*?width:\s*100%;/)
     expect(credentialStyles).toMatch(/\.credentialAliasDisplayLayout\s*\{[\s\S]*?display:\s*grid;/)
@@ -252,14 +328,18 @@ describe('Credential section styles', () => {
     expect(credentialStyles).not.toMatch(/\.credentialAliasDisplay\s*\{/)
   })
 
+  it('keeps the Auth File filename tooltip target on the normal arrow cursor', () => {
+    const filenameTooltipRule = scssRule(credentialStyles, '.credentialFileNameTooltipTarget')
+    expect(filenameTooltipRule).toMatch(/cursor:\s*default;/)
+    expect(filenameTooltipRule).not.toMatch(/cursor:\s*help;/)
+  })
+
   it('keeps Auth Files inspection separate from the quota refresh pill', () => {
     expect(authFileSectionSource).toContain('credentialSectionActionButtons')
-    expect(authFileSectionSource).toMatch(/credentialInspectionSwitcher[\s\S]*?credentialInspectionButton[\s\S]*?credentialRefreshSwitcher/)
+    expect(authFileSectionSource).toMatch(/<MainActionButton[\s\S]*?credentialInspectionButton[\s\S]*?<MainActionButton/)
     expect(authFileSectionSource).toContain('credentialInspectionButton')
-    expect(authFileSectionSource).toMatch(/credentialInspectionButton[\s\S]*?credentialRefreshSwitcher/)
-    expect(authFileSectionSource).toMatch(/credentialRefreshSwitcher\} \$\{styles\.credentialInspectionSwitcher[\s\S]*?credentialInspectionButton[\s\S]*?<\/div>\s*<div className=\{styles\.credentialRefreshSwitcher\}>[\s\S]*?credentialRefreshButtonLoading/)
-    expect(credentialStyles).toMatch(/\.credentialInspectionSwitcher\s*\{[\s\S]*?border-radius:\s*999px;/)
-    expect(credentialStyles).toMatch(/\.credentialInspectionSwitcher\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--bg-secondary\) 78%, transparent\);/)
+    expect(authFileSectionSource).toContain('loading={quotaRefreshing}')
+    expect(credentialStyles).not.toContain('.credentialInspectionSwitcher')
     expect(credentialStyles).toMatch(/\.credentialInspectionProgressTrack\s*\{[\s\S]*?height:\s*8px;/)
     expect(credentialStyles).toMatch(/\.credentialInspectionProgressTrack\s*\{[\s\S]*?background:\s*var\(--bg-tertiary\);/)
     expect(credentialStyles).toMatch(/\.credentialInspectionProgressTrack\s*\{[\s\S]*?border:\s*1px solid var\(--border-color\);/)
@@ -398,11 +478,92 @@ describe('Credential section styles', () => {
     expect(credentialStyles).toMatch(/@include mobile\s*\{[\s\S]*?\.credentialPageSizeControl\s*\{[\s\S]*?flex:\s*0 0 auto;/)
   })
 
+  it('gives every Auth Files credential label a dedicated visual treatment', () => {
+    const freeRule = scssRule(credentialStyles, '.credentialPlanBadgeFree')
+    const plusRule = scssRule(credentialStyles, '.credentialPlanBadgePlus')
+    const teamRule = scssRule(credentialStyles, '.credentialPlanBadgeTeam')
+    const pro5xRule = scssRule(credentialStyles, '.credentialPlanBadgePro5x')
+    const pro20xRule = scssRule(credentialStyles, '.credentialPlanBadgePro20x')
+    const enterpriseRule = scssRule(credentialStyles, '.credentialPlanBadgeEnterprise')
+    const remainingDaysRule = scssRule(credentialStyles, '.credentialRemainingDaysBadge', 1)
+    const priorityRule = scssRule(credentialStyles, '.credentialPriorityBadge')
+
+    expect(freeRule).toContain('#f5eee6')
+    expect(freeRule).toMatch(/box-shadow:[\s\S]*?inset 0 1px 0/)
+    expect(credentialStyles).not.toContain('.credentialPlanBadgeFree::before')
+    expect(plusRule).toContain('#2563eb')
+    expect(teamRule).toContain('#16a34a')
+    expect(pro5xRule).toContain('--credential-plan-tone-2: #f6dc37')
+    expect(pro20xRule).toContain('--credential-plan-tone-2: #f6dc37')
+    expect(enterpriseRule).toContain('#c4b5fd')
+    expect(credentialStyles).not.toContain('.credentialPlanBadgeClaude')
+    expect(credentialStyles).not.toContain('.credentialPlanBadgeAntigravity')
+    expect(remainingDaysRule).toContain('radial-gradient')
+    expect(priorityRule).toContain('linear-gradient')
+  })
+
+  it('preserves every selected Solar Citrine motion layer with compositor-friendly transforms', () => {
+    const badgeKeyframes = [...credentialStyles.matchAll(/@keyframes\s+(credentialPlanBadge\w+)/g)].map((match) => match[1])
+    expect(badgeKeyframes).toEqual([
+      'credentialPlanBadgeSolarFlow',
+      'credentialPlanBadgeSolarRotate',
+      'credentialPlanBadgeSheen',
+    ])
+    for (const keyframe of badgeKeyframes) {
+      const declarations = [...scssRule(credentialStyles, `@keyframes ${keyframe}`).matchAll(/^\s*([\w-]+)\s*:/gm)].map((match) => match[1])
+      expect(new Set(declarations), keyframe).toEqual(new Set(['transform']))
+    }
+    const badgeAnimationDeclarations = [...credentialStyles.matchAll(/animation:\s*credentialPlanBadge\w+[^;]*;/g)].map((match) => match[0]).sort()
+    const sharedMotionRules = [
+      scssRule(credentialStyles, '.credentialPlanBadgePlus,'),
+      scssRule(credentialStyles, '.credentialPlanBadgeFlow'),
+      scssRule(credentialStyles, '.credentialPlanBadgeCorona'),
+    ].join('\n')
+    const sharedAnimationDeclarations = [...sharedMotionRules.matchAll(/animation:\s*credentialPlanBadge\w+[^;]*;/g)].map((match) => match[0]).sort()
+    expect(badgeAnimationDeclarations).toEqual(sharedAnimationDeclarations)
+    expect(credentialStyles).not.toContain('@keyframes credentialFreeBadgeRefresh')
+    expect(credentialStyles).toContain('@keyframes credentialPlanBadgeSolarFlow')
+    expect(credentialStyles).toContain('@keyframes credentialPlanBadgeSolarRotate')
+    expect(credentialStyles).toContain('@keyframes credentialPlanBadgeSheen')
+    expect(credentialStyles).toMatch(/\.credentialPlanBadgeFlow\s*\{[\s\S]*?repeating-linear-gradient[\s\S]*?animation:\s*credentialPlanBadgeSolarFlow/)
+    expect(credentialStyles).toMatch(/\.credentialPlanBadgeCorona\s*\{[\s\S]*?conic-gradient[\s\S]*?animation:\s*credentialPlanBadgeSolarRotate/)
+    expect(credentialStyles).toMatch(/repeating-linear-gradient\(116deg,[\s\S]*?68\.30835px\)/)
+    expect(credentialStyles).toMatch(/repeating-linear-gradient\(112deg,[\s\S]*?140\.93195px\)/)
+    expect(credentialStyles).toMatch(/@keyframes credentialPlanBadgeSolarFlow[\s\S]*?translate3d\(152px, 0, 0\)/)
+    expect(credentialStyles).toMatch(/\.credentialPlanBadgePro20x::after\s*\{[\s\S]*?linear-gradient/)
+    expect(credentialStyles).toMatch(/\.credentialPlanBadgePro20x\s*\{[\s\S]*?--credential-plan-sheen-duration:\s*4\.8s/)
+    expect(credentialStyles).toMatch(/\.credentialPlanBadge\s*\{[\s\S]*?contain:\s*paint;/)
+    expect(credentialStyles).not.toContain('background-position:')
+    expect(credentialStyles).not.toContain('will-change:')
+  })
+
+  it('keeps screen blending by default and disables it only for Safari WebKit', () => {
+    const coronaRule = scssRule(credentialStyles, '.credentialPlanBadgeCorona')
+    const safariWebKitRule = scssRule(credentialStyles, '@supports (-webkit-nbsp-mode: space)')
+
+    expect(coronaRule).toContain('mix-blend-mode: screen;')
+    expect(scssRule(safariWebKitRule, '.credentialPlanBadgeCorona')).toContain('mix-blend-mode: normal;')
+    expect(safariWebKitRule).not.toContain('.credentialPlanBadgeFlow')
+  })
+
+  it('disables badge motion for reduced-motion and slow-update devices', () => {
+    expect(credentialStyles).toMatch(/prefers-reduced-motion:\s*reduce\),\s*\(update:\s*slow\)[\s\S]*?\.credentialPlanBadgeFlow[\s\S]*?\.credentialPlanBadgeCorona[\s\S]*?animation:\s*none/)
+    expect(credentialStyles).toMatch(/prefers-reduced-motion:\s*reduce\),\s*\(update:\s*slow\)[\s\S]*?\.credentialPlanBadgeEnterprise::before[\s\S]*?animation:\s*none/)
+    expect(credentialStyles).not.toMatch(/prefers-reduced-motion:[\s\S]*?\.credentialPlanBadgeFree::before/)
+  })
+
   it('keeps plan and remaining-day badges readable in dark mode', () => {
-    expect(credentialStyles).toMatch(/\[data-theme='dark'\][\s\S]*\.credentialPlanBadgeTeam[\s\S]*?color:\s*#bbf7d0;/)
-    expect(credentialStyles).toMatch(/\[data-theme='dark'\][\s\S]*\.credentialPlanBadgePlus[\s\S]*?color:\s*#bfdbfe;/)
-    expect(credentialStyles).toMatch(/\[data-theme='dark'\][\s\S]*\.credentialPlanBadgePro[\s\S]*?color:\s*#fde68a;/)
-    expect(credentialStyles).toMatch(/\[data-theme='dark'\][\s\S]*\.credentialRemainingDaysBadge[\s\S]*?color:\s*#bbf7d0;/)
+    const darkRules = scssRule(credentialStyles, ":global([data-theme='dark'])")
+    const darkFreeRule = scssRule(darkRules, '.credentialPlanBadgeFree')
+
+    expect(darkFreeRule).toContain('linear-gradient(145deg, #5b453a')
+    expect(darkFreeRule).toContain('color: #f5eee6;')
+    expect(scssRule(darkRules, '.credentialPlanBadgeTeam')).toContain('color: #edfff7;')
+    expect(scssRule(darkRules, '.credentialPlanBadgePlus')).toContain('color: #edf8ff;')
+    expect(scssRule(darkRules, '.credentialPlanBadgePro5x')).toContain('color: #302200;')
+    expect(scssRule(darkRules, '.credentialPlanBadgePro20x')).toContain('color: #302200;')
+    expect(scssRule(darkRules, '.credentialPlanBadgeEnterprise')).toContain('color: #26324a;')
+    expect(scssRule(darkRules, '.credentialRemainingDaysBadge')).toContain('color: #bbf7d0;')
   })
 
   it('wraps capacity context and keeps flag details keyboard accessible at quota-bar widths', () => {

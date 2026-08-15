@@ -98,6 +98,21 @@ func TestUsageActivityShortAlignmentMigrationRebuildsOnlyCheckpointedShortRows(t
 		t.Fatalf("Activity checkpoint changed:\n before=%+v\n after=%+v", beforeCheckpoint, after)
 	}
 
+	// 新运行时只读取通用 checkpoint；本历史 migration 用例在增量调用前手工映射旧 Activity 水位。
+	if err := db.AutoMigrate(&entities.UsageAggregationCheckpoint{}); err != nil {
+		t.Fatalf("create common aggregation checkpoint table: %v", err)
+	}
+	commonCheckpoint := entities.UsageAggregationCheckpoint{
+		Name:                       entities.UsageAggregationCheckpointActivity,
+		LastAggregatedUsageEventID: checkpoint.LastAggregatedUsageEventID,
+		StatsUpdatedAt:             checkpoint.StatsUpdatedAt,
+		CreatedAt:                  now,
+		UpdatedAt:                  now,
+	}
+	if err := db.Create(&commonCheckpoint).Error; err != nil {
+		t.Fatalf("seed common Activity checkpoint: %v", err)
+	}
+
 	// checkpoint 之后的 event 由正常增量补齐，short 最终只能累计一次。
 	if err := repository.AggregateUsageActivityStats(context.Background(), db, now); err != nil {
 		t.Fatalf("catch up Activity after short alignment: %v", err)

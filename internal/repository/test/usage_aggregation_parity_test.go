@@ -47,8 +47,8 @@ func TestUsageOverviewAggregationPreservesAllExistingHourlyAndDailyFields(t *tes
 	assertUsageOverviewParityFields(t, "daily", daily.RequestCount, daily.SuccessCount, daily.FailureCount, daily.InputTokens, daily.OutputTokens, daily.ReasoningTokens, daily.CachedTokens, daily.CacheReadTokens, daily.CacheCreationTokens, daily.TotalTokens)
 
 	// Overview checkpoint 继续精确推进到最后一条 usage event。
-	var checkpoint entities.UsageOverviewAggregationCheckpoint
-	if err := db.Where("name = ?", "overview").Take(&checkpoint).Error; err != nil {
+	var checkpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointOverview).Take(&checkpoint).Error; err != nil {
 		t.Fatalf("load overview parity checkpoint: %v", err)
 	}
 	if checkpoint.LastAggregatedUsageEventID != 2 {
@@ -90,7 +90,7 @@ func TestUsageOverviewAggregationRollsBackWhenDailyInsertAndRetryBothMiss(t *tes
 		t.Fatalf("count rolled back hourly rows: %v", countErr)
 	}
 	var checkpointCount int64
-	if countErr := db.Model(&entities.UsageOverviewAggregationCheckpoint{}).Where("name = ?", "overview").Count(&checkpointCount).Error; countErr != nil {
+	if countErr := db.Model(&entities.UsageAggregationCheckpoint{}).Where("name = ?", entities.UsageAggregationCheckpointOverview).Count(&checkpointCount).Error; countErr != nil {
 		t.Fatalf("count rolled back overview checkpoints: %v", countErr)
 	}
 	if hourlyCount != 0 || checkpointCount != 0 {

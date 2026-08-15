@@ -11,7 +11,37 @@ import (
 	"cpa-usage-keeper/internal/timeutil"
 
 	"gorm.io/gorm"
+	"gorm.io/plugin/dbresolver"
 )
+
+// HasPendingUsageIdentityAggregation 只判断是否存在超过任一身份行水位的匹配事件。
+func HasPendingUsageIdentityAggregation(ctx context.Context, db *gorm.DB) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("database is nil")
+	}
+	pending, err := hasPendingUsageIdentityAggregation(db.Clauses(dbresolver.Read).WithContext(ctx))
+	if err != nil {
+		return false, fmt.Errorf("check pending usage identity aggregation: %w", err)
+	}
+	return pending, nil
+}
+
+func hasPendingUsageIdentityAggregation(db *gorm.DB) (bool, error) {
+	var pending int
+	err := db.Raw(`SELECT EXISTS (
+		SELECT 1
+		FROM usage_identities AS identity
+		JOIN usage_events AS event
+		  ON event.id > identity.last_aggregated_usage_event_id
+		 AND event.auth_index = identity.identity
+		 AND ((identity.auth_type = ? AND event.auth_type = ?) OR (identity.auth_type = ? AND event.auth_type = ?))
+		LIMIT 1
+	)`, entities.UsageIdentityAuthTypeAuthFile, "oauth", entities.UsageIdentityAuthTypeAIProvider, "apikey").Scan(&pending).Error
+	if err != nil {
+		return false, err
+	}
+	return pending != 0, nil
+}
 
 func ReplaceUsageIdentitiesForAuthType(ctx context.Context, db *gorm.DB, identities []entities.UsageIdentity, authType entities.UsageIdentityAuthType, now time.Time) error {
 	if db == nil {
@@ -260,10 +290,10 @@ func applyUsageIdentityTypesFilter(query *gorm.DB, types []string) *gorm.DB {
 func applyUsageIdentityPageSort(query *gorm.DB, sort string, authType *entities.UsageIdentityAuthType) *gorm.DB {
 	switch sort {
 	case UsageIdentityPageSortPriority:
-		// Auth Files 的 priority 同分需要稳定按名称排列；AI Provider 只保留同步顺序兜底。
+		// Auth Files 的 priority 同分按 CPA 文件名排列；AI Provider 只保留同步顺序兜底。
 		query = query.Order("priority IS NULL ASC").Order("priority DESC")
 		if authType != nil && *authType == entities.UsageIdentityAuthTypeAuthFile {
-			query = query.Order("LOWER(name) ASC")
+			query = query.Order("LOWER(file_name) ASC")
 		}
 		return query.Order("id ASC")
 	case UsageIdentityPageSortTotalTokens:

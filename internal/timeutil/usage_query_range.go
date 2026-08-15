@@ -49,7 +49,7 @@ type UsageQueryRangeOptions struct {
 
 const (
 	defaultCustomDayRangeMaxDays = 30
-	// LongCustomDayRangeMaxDays 是聚合与事件长范围路径共享的硬上限。
+	// LongCustomDayRangeMaxDays 是聚合长范围路径共享的硬上限。
 	LongCustomDayRangeMaxDays = 365
 )
 

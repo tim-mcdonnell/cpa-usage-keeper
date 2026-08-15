@@ -22,6 +22,7 @@ interface CustomRangePanelProps {
   timeZone: string;
   locale?: string;
   anchorMs: number;
+  maxDayRangeDays: number;
   onChange: (value: UsageCustomRange) => void;
   onApply: () => void;
   onCancel: () => void;
@@ -88,6 +89,7 @@ function CustomRangeSummary({
   timeZone,
   locale,
   slotCount,
+  maxDayRangeDays,
   onUnitChange,
   onEdit,
   onApply,
@@ -97,6 +99,7 @@ function CustomRangeSummary({
   timeZone: string;
   locale?: string;
   slotCount: number;
+  maxDayRangeDays: number;
   onUnitChange: (unit: UsageCustomRangeUnit) => void;
   onEdit: (endpoint: CustomEndpoint) => void;
   onApply: () => void;
@@ -142,14 +145,14 @@ function CustomRangeSummary({
       </div>
       {value.unit === 'day' && (
         <small className={styles.customRangeLimitHint} data-custom-range-limit-hint>
-          {t('usage_stats.range_custom_day_limit_hint')}
+          {t('usage_stats.range_custom_day_limit_hint', { count: maxDayRangeDays })}
         </small>
       )}
       <div className={styles.customSummaryActions}>
-        <Button type="button" variant="secondary" size="sm" className={styles.customRangeAction} data-custom-summary-cancel onClick={onCancel}>
+        <Button type="button" variant="secondary" size="sm" appearance="action" data-custom-summary-cancel onClick={onCancel}>
           {t('common.cancel')}
         </Button>
-        <Button type="button" variant="primary" size="sm" className={styles.customRangeAction} data-custom-summary-apply data-custom-range-apply onClick={onApply}>
+        <Button type="button" variant="primary" size="sm" appearance="action" data-custom-summary-apply data-custom-range-apply onClick={onApply}>
           {t('common.apply')}
         </Button>
       </div>
@@ -157,11 +160,16 @@ function CustomRangeSummary({
   );
 }
 
-export function CustomRangePanel({ value, timeZone, locale, anchorMs, onChange, onApply, onCancel }: CustomRangePanelProps) {
+export function CustomRangePanel({ value, timeZone, locale, anchorMs, maxDayRangeDays, onChange, onApply, onCancel }: CustomRangePanelProps) {
   const { t } = useTranslation();
   const [view, setView] = useState<CustomPickerView>('summary');
   const [activeEndpoint, setActiveEndpoint] = useState<CustomEndpoint>('start');
-  const daySlots = useMemo(() => buildCustomDaySlots({ nowMs: anchorMs, timeZone, locale }), [anchorMs, locale, timeZone]);
+  const daySlots = useMemo(() => buildCustomDaySlots({
+    nowMs: anchorMs,
+    timeZone,
+    locale,
+    maxDayRangeDays,
+  }), [anchorMs, locale, maxDayRangeDays, timeZone]);
   const hourSlots = useMemo(() => buildCustomHourSlots({ nowMs: anchorMs, timeZone, locale }), [anchorMs, locale, timeZone]);
   const weekdayLabels = useMemo(() => buildCustomWeekdayLabels(locale), [locale]);
   const startIndex = hourSlots.findIndex((slot) => slot.value === value.start);
@@ -194,7 +202,7 @@ export function CustomRangePanel({ value, timeZone, locale, anchorMs, onChange, 
     if (unit === value.unit) return;
     setView('summary');
     setActiveEndpoint('start');
-    onChange(buildDefaultCustomRange({ unit, nowMs: anchorMs, timeZone }));
+    onChange(buildDefaultCustomRange({ unit, nowMs: anchorMs, timeZone, maxDayRangeDays }));
   };
 
   const handleEdit = (endpoint: CustomEndpoint) => {
@@ -254,6 +262,7 @@ export function CustomRangePanel({ value, timeZone, locale, anchorMs, onChange, 
         timeZone={timeZone}
         locale={locale}
         slotCount={slotCount}
+        maxDayRangeDays={maxDayRangeDays}
         onUnitChange={handleUnitChange}
         onEdit={handleEdit}
         onApply={onApply}
@@ -294,7 +303,7 @@ export function CustomRangePanel({ value, timeZone, locale, anchorMs, onChange, 
       {endpointCards}
       {value.unit === 'day' && (
         <small className={styles.customRangeLimitHint} data-custom-range-limit-hint>
-          {t('usage_stats.range_custom_day_limit_hint')}
+          {t('usage_stats.range_custom_day_limit_hint', { count: maxDayRangeDays })}
         </small>
       )}
 
@@ -409,10 +418,10 @@ export function CustomRangePanel({ value, timeZone, locale, anchorMs, onChange, 
       <div className={styles.customPickerFooter}>
         <span>{formatCustomRangeLabel(value, { locale, timeZone })}</span>
         <div className={styles.customPickerActions}>
-          <Button type="button" variant="secondary" size="sm" className={styles.customRangeAction} data-custom-picker-cancel onClick={handlePickerCancel}>
+          <Button type="button" variant="secondary" size="sm" appearance="action" data-custom-picker-cancel onClick={handlePickerCancel}>
             {t('common.cancel')}
           </Button>
-          <Button type="button" variant="primary" size="sm" className={styles.customRangeAction} data-custom-range-apply onClick={handlePickerApply}>
+          <Button type="button" variant="primary" size="sm" appearance="action" data-custom-range-apply onClick={handlePickerApply}>
             {t('common.apply')}
           </Button>
         </div>

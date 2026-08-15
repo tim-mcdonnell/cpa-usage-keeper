@@ -52,6 +52,7 @@ type QuotaReading struct {
 	observedAt         time.Time
 	triggeringEventID  int64
 	triggeringEventKey string
+	subscription       *SubscriptionInfo
 	rows               []QuotaRow
 }
 
@@ -369,14 +370,16 @@ func newQuotaReading(
 	provider string,
 	source RefreshSource,
 	observedAt time.Time,
+	subscription *SubscriptionInfo,
 	rows []QuotaRow,
 ) QuotaReading {
 	return QuotaReading{
-		identity:   cloneQuotaObservationIdentity(identity),
-		provider:   strings.ToLower(strings.TrimSpace(provider)),
-		source:     source,
-		observedAt: timeutil.NormalizeStorageTime(observedAt),
-		rows:       cloneQuotaRows(rows),
+		identity:     cloneQuotaObservationIdentity(identity),
+		provider:     strings.ToLower(strings.TrimSpace(provider)),
+		source:       source,
+		observedAt:   timeutil.NormalizeStorageTime(observedAt),
+		subscription: cloneSubscriptionInfo(subscription),
+		rows:         cloneQuotaRows(rows),
 	}
 }
 
@@ -386,9 +389,10 @@ func newQuotaHeaderReading(
 	observedAt time.Time,
 	triggeringEventID int64,
 	triggeringEventKey string,
+	subscription *SubscriptionInfo,
 	rows []QuotaRow,
 ) QuotaReading {
-	reading := newQuotaReading(identity, provider, RefreshSourceUsageHeader, observedAt, rows)
+	reading := newQuotaReading(identity, provider, RefreshSourceUsageHeader, observedAt, subscription, rows)
 	reading.triggeringEventID = triggeringEventID
 	reading.triggeringEventKey = strings.TrimSpace(triggeringEventKey)
 	return reading
@@ -401,9 +405,13 @@ func newQuotaObservation(reading QuotaReading, authType string, row QuotaRow) en
 	if resetRaw == nil {
 		resetRaw = nullableVerbatimString(row.ResetAt)
 	}
-	planType := nullableTrimmedString(row.PlanType)
-	if planType == nil {
-		planType = cloneStringPointer(reading.identity.PlanType)
+	var planType *string
+	if reading.subscription != nil {
+		planType = nullableTrimmedString(reading.subscription.Plan)
+	}
+	used := cloneFloat64Pointer(row.Used)
+	if row.UsedDerived {
+		used = nil
 	}
 	observation := entities.QuotaObservation{
 		UsageIdentityID:      reading.identity.ID,
@@ -423,7 +431,7 @@ func newQuotaObservation(reading QuotaReading, authType string, row QuotaRow) en
 		UsedPercent:          cloneFloat64Pointer(row.UsedPercent),
 		PercentSource:        row.PercentSource,
 		RemainingFraction:    cloneFloat64Pointer(row.RemainingFraction),
-		Used:                 cloneFloat64Pointer(row.Used),
+		Used:                 used,
 		LimitValue:           cloneFloat64Pointer(row.Limit),
 		Remaining:            cloneFloat64Pointer(row.Remaining),
 		ResetAt:              resetAt,
@@ -700,6 +708,14 @@ func cloneQuotaObservationIdentity(identity entities.UsageIdentity) entities.Usa
 	cloned.AccountID = cloneStringPointer(identity.AccountID)
 	cloned.PlanType = cloneStringPointer(identity.PlanType)
 	return cloned
+}
+
+func cloneSubscriptionInfo(subscription *SubscriptionInfo) *SubscriptionInfo {
+	if subscription == nil {
+		return nil
+	}
+	cloned := *subscription
+	return &cloned
 }
 
 func quotaRowWindowSeconds(row QuotaRow) *int64 {

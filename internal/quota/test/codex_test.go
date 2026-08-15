@@ -54,8 +54,12 @@ func TestCodexProviderUsesAccountIDForUsageRequest(t *testing.T) {
 		t.Fatalf("expected parsed reset credits payload, got %#v", result.Usage.RateLimitResetCredits)
 	}
 	rows := quota.NormalizeQuotaRows(output)
-	if len(rows) != 2 || rows[0].PlanType != "plus" || rows[1].PlanType != "plus" {
-		t.Fatalf("expected normalized Codex rows to carry planType plus, got %#v", rows)
+	if len(rows) != 2 {
+		t.Fatalf("expected normalized Codex rows, got %#v", rows)
+	}
+	subscription := quota.NormalizeSubscription(output)
+	if subscription == nil || subscription.Provider != "codex" || subscription.Plan != "plus" {
+		t.Fatalf("expected response-level Codex subscription plus, got %#v", subscription)
 	}
 	encoded, err := json.Marshal(output.Result)
 	if err != nil {
@@ -265,12 +269,12 @@ func TestCodexProviderPreservesProWindowUsageFields(t *testing.T) {
 	assertWindowUsage(t, secondary, 623087989, 614.6869810999999)
 	additional := findCodexQuotaRow(t, rows, "additional_rate_limits.GPT-5.3-Codex-Spark.primary_window")
 	assertWindowUsage(t, additional, 393311, 0.458464)
-	if additional.Scope != "additional" || additional.Metric != "codex_bengalfox" || additional.PlanType != "pro" {
+	if additional.Scope != "additional" || additional.Metric != "codex_bengalfox" {
 		t.Fatalf("expected additional row metadata to survive normalization, got %#v", additional)
 	}
 	additionalSecondary := findCodexQuotaRow(t, rows, "additional_rate_limits.GPT-5.3-Codex-Spark.secondary_window")
 	assertWindowUsage(t, additionalSecondary, 418184136, 405.1611734)
-	if additionalSecondary.Scope != "additional" || additionalSecondary.Metric != "codex_bengalfox" || additionalSecondary.PlanType != "pro" {
+	if additionalSecondary.Scope != "additional" || additionalSecondary.Metric != "codex_bengalfox" {
 		t.Fatalf("expected additional secondary row metadata to survive normalization, got %#v", additionalSecondary)
 	}
 }

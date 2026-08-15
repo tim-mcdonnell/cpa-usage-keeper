@@ -425,7 +425,7 @@ export function RequestEventsColumnSettingsModal({
             type="button"
             variant="secondary"
             size="sm"
-            className={styles.requestEventsColumnSettingsAction}
+            appearance="action"
             data-request-events-column-settings-cancel
             onClick={onClose}
           >
@@ -435,7 +435,7 @@ export function RequestEventsColumnSettingsModal({
             type="button"
             variant="primary"
             size="sm"
-            className={styles.requestEventsColumnSettingsAction}
+            appearance="action"
             data-request-events-column-settings-apply
             onClick={() => {
               onApply(draftVisibleColumnIds, draftColumnOrder);

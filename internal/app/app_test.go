@@ -246,7 +246,7 @@ func TestNewWithConfigLeavesExistingUsageForBackgroundAggregationRunner(t *testi
 
 	// 断言：构造阶段不做同步 catch-up，工作保留给 App.Run 启动的后台任务。
 	var checkpointCount int64
-	if err := app.DB.Model(&entities.UsageOverviewAggregationCheckpoint{}).Where("name = ?", "overview").Count(&checkpointCount).Error; err != nil {
+	if err := app.DB.Model(&entities.UsageAggregationCheckpoint{}).Where("name = ?", entities.UsageAggregationCheckpointOverview).Count(&checkpointCount).Error; err != nil {
 		t.Fatalf("count overview checkpoints returned error: %v", err)
 	}
 	if checkpointCount != 0 {

@@ -16,13 +16,12 @@ import (
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/poller"
-	"cpa-usage-keeper/internal/quota"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service"
 	servicedto "cpa-usage-keeper/internal/service/dto"
 )
 
-func TestNewWithConfigUsesIndependentFourConnectionFileReader(t *testing.T) {
+func TestNewWithConfigUsesIndependentEightOpenFourIdleFileReader(t *testing.T) {
 	// 准备：文件数据库应在 writer 初始化完成后创建独立硬只读池。
 	cfg := databasePoolTestConfig(filepath.Join(t.TempDir(), "app.db"))
 	application, err := keeperapp.NewWithConfig(cfg)
@@ -48,12 +47,12 @@ func TestNewWithConfigUsesIndependentFourConnectionFileReader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load read sql db: %v", err)
 	}
-	// 断言：App 对外 reader 使用固定四连接上限，writer 仍保持唯一连接。
+	// 断言：App 对外 reader 使用 8 个按需上限，writer 仍保持唯一连接。
 	if stats := writeSQL.Stats(); stats.MaxOpenConnections != 1 {
 		t.Fatalf("expected writer max open connections to be 1, got %+v", stats)
 	}
-	if stats := readSQL.Stats(); stats.MaxOpenConnections != 4 {
-		t.Fatalf("expected reader max open connections to be 4, got %+v", stats)
+	if stats := readSQL.Stats(); stats.MaxOpenConnections != 8 {
+		t.Fatalf("expected reader max open connections to be 8, got %+v", stats)
 	}
 
 	// 执行：统一关闭入口必须依次释放两个不同的底层池。
@@ -210,8 +209,9 @@ func TestAPIKeyAliasUpdateStaysOnWriterWhenReadersAreOccupied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load read sql db: %v", err)
 	}
-	readers := make([]*sql.Conn, 0, 4)
-	for index := 0; index < 4; index++ {
+	readerLimit := readSQL.Stats().MaxOpenConnections
+	readers := make([]*sql.Conn, 0, readerLimit)
+	for index := 0; index < readerLimit; index++ {
 		reader, err := readSQL.Conn(context.Background())
 		if err != nil {
 			t.Fatalf("hold reader connection %d: %v", index, err)
@@ -337,8 +337,8 @@ func TestRedisUsageProcessingStaysOnWriterWhenReadersAreOccupied(t *testing.T) {
 	}
 }
 
-func TestUsageAggregationStaysOnWriterWhenReadersAreOccupied(t *testing.T) {
-	// 准备：提交一条 usage event 和对应 header snapshot，覆盖聚合前门禁、写事务与提交后 cursor 回读。
+func TestUsageAggregationReadsWaitForOccupiedReadersBeforeWriting(t *testing.T) {
+	// 准备：提交一条 usage event，并占满 reader 验证 target/checkpoint/event page 固定走只读池。
 	cfg := databasePoolTestConfig(filepath.Join(t.TempDir(), "app.db"))
 	application, err := keeperapp.NewWithConfig(cfg)
 	if err != nil {
@@ -353,12 +353,9 @@ func TestUsageAggregationStaysOnWriterWhenReadersAreOccupied(t *testing.T) {
 	if err := application.DB.Create(&event).Error; err != nil {
 		t.Fatalf("seed aggregation usage event: %v", err)
 	}
-	appender := &databasePoolUsageHeaderAppender{}
-	runner := poller.NewUsageAggregationRunner(application.DB, appender)
-	runner.NotifyUsageEventsCommitted([]entities.UsageEvent{event}, []quota.UsageHeaderSnapshot{{
-		AuthType: "oauth", AuthIndex: event.AuthIndex, Provider: "codex", ObservedAt: now,
-	}})
-	readers, releaseReaders := holdDatabasePoolReaders(t, application.ReadDB)
+	runner := poller.NewUsageAggregationRunner(application.DB)
+	runner.NotifyUsageEventsCommitted([]entities.UsageEvent{event})
+	_, releaseReaders := holdDatabasePoolReaders(t, application.ReadDB)
 	readersHeld := true
 	defer func() {
 		if readersHeld {
@@ -366,37 +363,31 @@ func TestUsageAggregationStaysOnWriterWhenReadersAreOccupied(t *testing.T) {
 		}
 	}()
 
-	// 执行并断言：reader 全满时依次运行三类聚合；普通自动路由会在门禁、事务查询或提交后 cursor 处等待。
-	for _, expectedKind := range []poller.UsageAggregationKind{
-		poller.UsageAggregationKindOverview,
-		poller.UsageAggregationKindActivity,
-		poller.UsageAggregationKindIdentity,
-	} {
-		runDone := make(chan databasePoolAggregationRunResult, 1)
-		go func() {
-			result, runErr := runner.RunOnce(context.Background())
-			runDone <- databasePoolAggregationRunResult{result: result, err: runErr}
-		}()
-		select {
-		case runResult := <-runDone:
-			if runResult.err != nil {
-				t.Fatalf("%s RunOnce returned error: %v", expectedKind, runResult.err)
-			}
-			if runResult.result.Kind != expectedKind {
-				t.Fatalf("expected %s aggregation, got %+v", expectedKind, runResult.result)
-			}
-		case <-time.After(time.Second):
-			releaseReaders()
-			readersHeld = false
-			<-runDone
-			t.Fatalf("%s aggregation waited for %d occupied readers", expectedKind, len(readers))
-		}
+	// 执行：reader 全满时启动共享 rollups，MAX(id) 必须排队而不是偷用 writer。
+	runDone := make(chan databasePoolAggregationRunResult, 1)
+	go func() {
+		result, runErr := runner.RunOnce(context.Background())
+		runDone <- databasePoolAggregationRunResult{result: result, err: runErr}
+	}()
+	select {
+	case runResult := <-runDone:
+		t.Fatalf("rollups bypassed occupied reader pool: %+v", runResult)
+	case <-time.After(100 * time.Millisecond):
+		// 等待证明只读池已成为真实依赖，随后释放以完成本次 turn。
 	}
 
 	releaseReaders()
 	readersHeld = false
-	if appender.callCount != 1 {
-		t.Fatalf("expected one header snapshot append after Overview commit, got %d", appender.callCount)
+	select {
+	case runResult := <-runDone:
+		if runResult.err != nil {
+			t.Fatalf("rollups after releasing readers: %v", runResult.err)
+		}
+		if runResult.result.Kind != poller.UsageAggregationKindRollups || !runResult.result.Processed {
+			t.Fatalf("unexpected rollups result after releasing readers: %+v", runResult.result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("rollups did not resume after reader connections were released")
 	}
 }
 
@@ -502,20 +493,11 @@ type databasePoolUsageAggregationNotifier struct {
 	usageCalls int
 }
 
-func (n *databasePoolUsageAggregationNotifier) NotifyUsageEventsCommitted([]entities.UsageEvent, []quota.UsageHeaderSnapshot) {
+func (n *databasePoolUsageAggregationNotifier) NotifyUsageEventsCommitted([]entities.UsageEvent) {
 	n.usageCalls++
 }
 
 func (*databasePoolUsageAggregationNotifier) NotifyUsageIdentitiesChanged() {}
-
-type databasePoolUsageHeaderAppender struct {
-	callCount int
-}
-
-func (a *databasePoolUsageHeaderAppender) TryAppendUsageHeaderSnapshots([]quota.UsageHeaderSnapshot) bool {
-	a.callCount++
-	return true
-}
 
 func holdDatabasePoolReaders(t *testing.T, readDB interface{ DB() (*sql.DB, error) }) ([]*sql.Conn, func()) {
 	// helper 只占用 reader 底层连接，不执行事务或改写任何数据库状态。
@@ -524,8 +506,9 @@ func holdDatabasePoolReaders(t *testing.T, readDB interface{ DB() (*sql.DB, erro
 	if err != nil {
 		t.Fatalf("load read sql db: %v", err)
 	}
-	readers := make([]*sql.Conn, 0, 4)
-	for index := 0; index < 4; index++ {
+	readerLimit := readSQL.Stats().MaxOpenConnections
+	readers := make([]*sql.Conn, 0, readerLimit)
+	for index := 0; index < readerLimit; index++ {
 		reader, openErr := readSQL.Conn(context.Background())
 		if openErr != nil {
 			for _, openedReader := range readers {

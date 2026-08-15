@@ -32,6 +32,9 @@ func applyUsageHeaderSnapshot(service *quota.Service, ctx context.Context, snaps
 //go:linkname applyUsageHeaderSnapshots cpa-usage-keeper/internal/quota.(*Service).applyUsageHeaderSnapshots
 func applyUsageHeaderSnapshots(service *quota.Service, ctx context.Context, snapshots []quota.UsageHeaderSnapshot)
 
+//go:linkname mergePendingUsageHeaderSnapshots cpa-usage-keeper/internal/quota.mergePendingUsageHeaderSnapshots
+func mergePendingUsageHeaderSnapshots(pending map[string]quota.UsageHeaderSnapshot, snapshots []quota.UsageHeaderSnapshot)
+
 //go:linkname cleanupExpiredRefreshTasks cpa-usage-keeper/internal/quota.(*Service).cleanupExpiredRefreshTasks
 func cleanupExpiredRefreshTasks(service *quota.Service, now time.Time)
 
@@ -124,6 +127,10 @@ func lastAutoRefreshAttemptAt(service *quota.Service) time.Time {
 
 func usageHeaderFlushInterval(service *quota.Service) time.Duration {
 	return quotaServiceField(service, "usageHeaderFlushInterval").Interface().(time.Duration)
+}
+
+func setUsageHeaderTimerFactory(service *quota.Service, factory func(time.Duration) (<-chan time.Time, func())) {
+	quotaServiceField(service, "usageHeaderNewTimer").Set(reflect.ValueOf(factory))
 }
 
 func floatPtr(value float64) *float64 {

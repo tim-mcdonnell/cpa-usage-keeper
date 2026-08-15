@@ -41,6 +41,9 @@ type queuedUsageDetail struct {
 	TTFTMS              *int64          `json:"ttft_ms"`
 	Source              string          `json:"source"`
 	AuthIndex           string          `json:"auth_index"`
+	ClientIP            *string         `json:"client_ip"`
+	XForwardedFor       *string         `json:"x_forwarded_for"`
+	UserAgent           *string         `json:"user_agent"`
 	Tokens              dto.TokenStats  `json:"tokens"`
 	Failed              bool            `json:"failed"`
 	Generate            *bool           `json:"generate"`
@@ -117,6 +120,9 @@ func (d queuedUsageDetail) toUsageEvent(fetchedAt time.Time) entities.UsageEvent
 		Endpoint:            strings.TrimSpace(d.Endpoint),
 		AuthType:            normalizeRedisAuthType(d.AuthType),
 		RequestID:           strings.TrimSpace(d.RequestID),
+		ClientIP:            d.ClientIP,
+		XForwardedFor:       d.XForwardedFor,
+		UserAgent:           d.UserAgent,
 		Model:               model,
 		ModelAlias:          trimRedisOptionalString(d.Alias),
 		ReasoningEffort:     strings.TrimSpace(d.ReasoningEffort),

@@ -13,6 +13,7 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
+	"cpa-usage-keeper/internal/quota"
 	"cpa-usage-keeper/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -54,7 +55,7 @@ type usageIdentityResponse struct {
 	Priority                   *int                           `json:"priority,omitempty"`
 	Disabled                   bool                           `json:"disabled"`
 	Note                       *string                        `json:"note,omitempty"`
-	PlanType                   *string                        `json:"plan_type,omitempty"`
+	Subscription               *quota.SubscriptionInfo        `json:"subscription,omitempty"`
 	ActiveStart                *time.Time                     `json:"active_start,omitempty"`
 	ActiveUntil                *time.Time                     `json:"active_until,omitempty"`
 	TotalRequests              int64                          `json:"total_requests"`
@@ -280,7 +281,7 @@ func mapUsageIdentityResponseWithHealth(item entities.UsageIdentity, health *ser
 		Priority:                   item.Priority,
 		Disabled:                   disabled,
 		Note:                       item.Note,
-		PlanType:                   item.PlanType,
+		Subscription:               quota.ResolveIdentitySubscription(item),
 		ActiveStart:                item.ActiveStart,
 		ActiveUntil:                item.ActiveUntil,
 		TotalRequests:              item.TotalRequests,

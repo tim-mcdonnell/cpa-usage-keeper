@@ -11,6 +11,7 @@ import (
 	"cpa-usage-keeper/internal/timeutil"
 
 	"gorm.io/gorm"
+	"gorm.io/plugin/dbresolver"
 )
 
 const quotaWindowRawOnlyThreshold = 5 * time.Hour
@@ -46,13 +47,11 @@ type usageWindowTokenStatsKey struct {
 	dimensions pricing.UsageDimensions
 }
 
-func NewUsageWindowStatsCalculator(ctx context.Context, db *gorm.DB, costResolver pricing.Resolver) (*UsageWindowStatsCalculator, error) {
+func NewUsageWindowStatsCalculator(_ context.Context, db *gorm.DB, costResolver pricing.Resolver) (*UsageWindowStatsCalculator, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database is nil")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	// 保存原始可克隆句柄；Reader clause 必须在每次 Sum 的独立 session 上绑定，不能保存可变 Statement。
 	return &UsageWindowStatsCalculator{db: db, costResolver: costResolver}, nil
 }
 
@@ -67,7 +66,9 @@ func (c *UsageWindowStatsCalculator) SumByAuthIndex(ctx context.Context, authInd
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	rows, err := loadUsageWindowTokenStats(c.db.WithContext(ctx), authIndex, start, end, c.costResolver.ActiveFields())
+	// 先绑定 Reader，再创建 clone=2 的独立 session；长窗口三段查询不会互相累积 Model/Where。
+	queryDB := c.db.Clauses(dbresolver.Read).Session(&gorm.Session{Context: ctx})
+	rows, err := loadUsageWindowTokenStats(queryDB, authIndex, start, end, c.costResolver.ActiveFields())
 	if err != nil {
 		return UsageWindowStats{}, err
 	}
@@ -75,32 +76,12 @@ func (c *UsageWindowStatsCalculator) SumByAuthIndex(ctx context.Context, authInd
 }
 
 func SumUsageWindowStatsByAuthIndex(ctx context.Context, db *gorm.DB, authIndex string, start time.Time, end *time.Time, costResolver pricing.Resolver) (UsageWindowStats, error) {
-	// 数据库句柄为空时直接返回错误，避免后续查询 panic。
-	if db == nil {
-		// 返回明确错误，调用方可以按普通统计失败处理。
-		return UsageWindowStats{}, fmt.Errorf("database is nil")
-	}
-	// auth_index 是 quota 统计的唯一身份维度，先去掉外部传入的空白。
-	authIndex = strings.TrimSpace(authIndex)
-	// auth_index 为空时没有可查询对象，直接返回参数错误。
-	if authIndex == "" {
-		// 返回明确错误，避免误查全表。
-		return UsageWindowStats{}, fmt.Errorf("auth_index is required")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	queryDB := db.WithContext(ctx)
-	// 调用开始时固定一个 resolver，后续 raw/hourly 聚合结果都复用同一份价格快照。
-	// 根据窗口长度选择 raw-only 或 hourly-rollup 查询计划。
-	rows, err := loadUsageWindowTokenStats(queryDB, authIndex, start, end, costResolver.ActiveFields())
-	// 任意一段查询失败都返回错误，调用方会跳过本次窗口补充。
+	// 兼容函数只负责构造统一 calculator，禁止保留第二套窗口切分、查询和计价实现。
+	calculator, err := NewUsageWindowStatsCalculator(ctx, db, costResolver)
 	if err != nil {
-		// 给错误包上业务上下文，方便日志识别失败位置。
 		return UsageWindowStats{}, err
 	}
-	// 把 model_alias/model 级 token 聚合结果换算成最终 token/cost 汇总。
-	return usageWindowStatsFromTokenStats(rows, costResolver), nil
+	return calculator.SumByAuthIndex(ctx, authIndex, start, end)
 }
 
 func loadUsageWindowTokenStats(db *gorm.DB, authIndex string, start time.Time, end *time.Time, activeFields pricing.ActiveFields) ([]usageWindowTokenStats, error) {

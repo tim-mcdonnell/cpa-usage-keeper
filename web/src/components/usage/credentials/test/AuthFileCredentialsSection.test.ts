@@ -83,7 +83,7 @@ describe('AuthFileCredentialsSection title', () => {
 
   it('renders shared metric headers without repeating labels in each row', () => {
     const row = {
-      identity: { id: '1', identity: 'auth-1', is_deleted: false },
+      identity: { id: '1', identity: 'auth-1', type: 'codex', is_deleted: false },
       displayName: 'Very Long Auth File Name For Wrapping',
       maskedIdentity: 'auth-1',
       providerLabel: 'Codex',
@@ -111,6 +111,11 @@ describe('AuthFileCredentialsSection title', () => {
     expect(html).toContain('usage_stats.credentials_column_quota')
     expect(html).toContain('1.23K')
     expect(html).toContain('97.24%')
+    expect(html).toContain('data-provider-brand-icon="codex"')
+    expect(html.indexOf('data-provider-brand-icon="codex"')).toBeLessThan(html.indexOf('Very Long Auth File Name For Wrapping'))
+    expect(html).toContain('role="img"')
+    expect(html).toContain('aria-label="codex"')
+    expect(html).not.toContain('>codex</span>')
   })
 
   it('keeps Auth Files metric cells aligned when values are unavailable', () => {
@@ -139,6 +144,50 @@ describe('AuthFileCredentialsSection title', () => {
     expect(html).toContain('usage_stats.success_rate')
     expect(html).toContain('usage_stats.total_tokens')
     expect(html).toContain('usage_stats.cache_rate')
+  })
+
+  it('renders isolated decorative layers for animated subscription badges', () => {
+    const row = {
+      identity: { id: '1', identity: 'auth-1', is_deleted: false },
+      displayName: 'Codex Pro Account',
+      maskedIdentity: 'auth-1',
+      providerLabel: 'Codex',
+      typeLabel: 'codex',
+      authTypeLabel: 'oauth',
+      subscriptionBadge: { kind: 'codex-pro20x', fallbackLabel: 'Pro 20x' },
+      totalRequests: 0,
+      successCount: 0,
+      failureCount: 0,
+      successRate: null,
+      totalTokens: 0,
+      cacheReadRate: null,
+      quota: [],
+      quotaLoading: false,
+      displayQuotas: [],
+    } as AuthFileCredentialRow
+
+    const html = renderToStaticMarkup(createElement(AuthFileCredentialsSection, createAuthFileSectionProps({ rows: [row], total: 1 })))
+
+    expect(html).toContain('credentialPlanBadgeFlow')
+    expect(html).toContain('credentialPlanBadgeCorona')
+    expect(html).toContain('credentialPlanBadgeLabel')
+    expect(html).toMatch(/credentialPlanBadgeFlow[^>]+aria-hidden="true"/)
+    expect(html).toMatch(/credentialPlanBadgeCorona[^>]+aria-hidden="true"/)
+
+    for (const subscriptionBadge of [
+      { kind: 'codex-free', fallbackLabel: 'Free' },
+      { kind: 'codex-unknown', fallbackLabel: 'Custom' },
+    ] as const) {
+      const lightweightHtml = renderToStaticMarkup(createElement(AuthFileCredentialsSection, createAuthFileSectionProps({
+        rows: [{ ...row, subscriptionBadge }],
+        total: 1,
+      })))
+
+      expect(lightweightHtml).toContain('credentialPlanBadgeLabel')
+      expect(lightweightHtml).toContain(subscriptionBadge.fallbackLabel)
+      expect(lightweightHtml).not.toContain('credentialPlanBadgeFlow')
+      expect(lightweightHtml).not.toContain('credentialPlanBadgeCorona')
+    }
   })
 })
 

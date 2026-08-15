@@ -38,18 +38,12 @@ const renderCard = (props: Partial<React.ComponentProps<typeof RequestEventsDeta
     <RequestEventsDetailsCard
       events={events}
       loading={false}
-      page={1}
-      pageSize={20}
-      pageSizeOptions={[20, 50, 100, 500, 1000]}
       totalCount={1}
-      totalPages={1}
       modelOptions={['claude-sonnet']}
       sourceOptions={[{ value: 'source-a', label: 'Provider A' }]}
       modelFilter="__all__"
       sourceFilter="__all__"
       resultFilter="__all__"
-      onPageChange={() => undefined}
-      onPageSizeChange={() => undefined}
       onModelFilterChange={() => undefined}
       onSourceFilterChange={() => undefined}
       onResultFilterChange={() => undefined}
@@ -107,5 +101,40 @@ describe('RequestEventsDetailsCard model alias column', () => {
 
     expect(modelAliasHeaderIndex).toBeGreaterThanOrEqual(0);
     expect(cells[modelAliasHeaderIndex]).toBe('-');
+  });
+});
+
+describe('RequestEventsDetailsCard client metadata columns', () => {
+  it('shows client metadata after the core request metrics', () => {
+    const html = renderCard({
+      events: [{
+        ...events[0],
+        client_ip: '192.0.2.10',
+        x_forwarded_for: '203.0.113.5, 198.51.100.8',
+        user_agent: 'test-client/1.0',
+      }],
+    });
+    const headers = extractTableHeaders(html);
+    const cells = extractFirstTableRowCells(html);
+    expect(headers.slice(-3)).toEqual([
+      'Client IP',
+      'X-Forwarded-For',
+      'User Agent',
+    ]);
+    expect(cells.slice(-3)).toEqual([
+      '192.0.2.10',
+      '203.0.113.5, 198.51.100.8',
+      'test-client/1.0',
+    ]);
+  });
+
+  it('renders dashes for missing client metadata', () => {
+    const html = renderCard();
+    const headers = extractTableHeaders(html);
+    const cells = extractFirstTableRowCells(html);
+
+    for (const header of ['Client IP', 'X-Forwarded-For', 'User Agent']) {
+      expect(cells[headers.indexOf(header)]).toBe('-');
+    }
   });
 });

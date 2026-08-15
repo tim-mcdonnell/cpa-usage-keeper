@@ -29,6 +29,9 @@ type UsageFilter struct {
 	Page            int
 	PageSize        int
 	Offset          int
+	CursorMode      bool
+	CursorTimestamp *time.Time
+	CursorID        int64
 	Model           string
 	Source          string
 	AuthIndex       string
@@ -40,6 +43,7 @@ type UsageFilter struct {
 type UsageEventsPage struct {
 	Events     []UsageEventRecord
 	TotalCount int64
+	HasMore    bool
 	Page       int
 	PageSize   int
 	TotalPages int
@@ -60,6 +64,9 @@ type UsageEventRecord struct {
 	ReasoningEffort     string
 	ServiceTier         string
 	ResponseServiceTier string
+	ClientIP            *string
+	XForwardedFor       *string
+	UserAgent           *string
 	ExecutorType        string
 	Endpoint            string
 	AuthType            string

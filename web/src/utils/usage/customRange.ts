@@ -3,12 +3,13 @@ import { isSelectableUsageRange } from './rangeQuery';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const CUSTOM_DAY_SLOT_COUNT = 365;
+export const DEFAULT_CUSTOM_DAY_RANGE_MAX_DAYS = 365;
 
 interface CustomRangeClockOptions {
   nowMs: number;
   timeZone: string;
   locale?: string;
+  maxDayRangeDays?: number;
 }
 
 interface BuildDefaultCustomRangeOptions extends CustomRangeClockOptions {
@@ -106,14 +107,20 @@ const formatDayLabel = (dateKey: string, locale?: string): string => {
 interface CustomDayBounds {
   firstCalendarMs: number;
   firstDay: string;
+  slotCount: number;
   todayCalendarMs: number;
   today: string;
 }
 
-const getCustomDayBounds = ({ nowMs, timeZone }: CustomRangeClockOptions): CustomDayBounds => {
+const resolveCustomDayRangeMaxDays = (value?: number): number => (
+  Number.isInteger(value) && Number(value) > 0 ? Number(value) : DEFAULT_CUSTOM_DAY_RANGE_MAX_DAYS
+);
+
+const getCustomDayBounds = ({ nowMs, timeZone, maxDayRangeDays }: CustomRangeClockOptions): CustomDayBounds => {
+  const slotCount = resolveCustomDayRangeMaxDays(maxDayRangeDays);
   const todayParts = getZonedParts(nowMs, timeZone);
   const todayCalendarMs = Date.UTC(todayParts.year, todayParts.month - 1, todayParts.day);
-  const firstCalendarMs = todayCalendarMs - (CUSTOM_DAY_SLOT_COUNT - 1) * DAY_MS;
+  const firstCalendarMs = todayCalendarMs - (slotCount - 1) * DAY_MS;
   const firstDate = new Date(firstCalendarMs);
   return {
     firstCalendarMs,
@@ -122,6 +129,7 @@ const getCustomDayBounds = ({ nowMs, timeZone }: CustomRangeClockOptions): Custo
       month: firstDate.getUTCMonth() + 1,
       day: firstDate.getUTCDate(),
     }),
+    slotCount,
     todayCalendarMs,
     today: formatDateKey(todayParts),
   };
@@ -133,13 +141,14 @@ export const buildCustomWeekdayLabels = (locale?: string): string[] => {
   return Array.from({ length: 7 }, (_, index) => formatter.format(new Date(sunday + index * DAY_MS)));
 };
 
-export const buildCustomDaySlots = ({ nowMs, timeZone, locale }: CustomRangeClockOptions): UsageCustomRangeSlot[] => {
-  const { firstCalendarMs } = getCustomDayBounds({ nowMs, timeZone });
+export const buildCustomDaySlots = (options: CustomRangeClockOptions): UsageCustomRangeSlot[] => {
+  const { locale } = options;
+  const { firstCalendarMs, slotCount } = getCustomDayBounds(options);
   const labelFormatter = new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone: 'UTC' });
-  return Array.from({ length: CUSTOM_DAY_SLOT_COUNT }, (_, index) => {
+  return Array.from({ length: slotCount }, (_, index) => {
     const date = new Date(firstCalendarMs + index * DAY_MS);
     const value = formatDateKey({ year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() });
-    return { value, label: labelFormatter.format(date), dateLabel: value, current: index === CUSTOM_DAY_SLOT_COUNT - 1 };
+    return { value, label: labelFormatter.format(date), dateLabel: value, current: index === slotCount - 1 };
   });
 };
 
@@ -161,9 +170,9 @@ export const buildCustomHourSlots = ({ nowMs, timeZone, locale }: CustomRangeClo
   });
 };
 
-export const buildDefaultCustomRange = ({ unit, nowMs, timeZone }: BuildDefaultCustomRangeOptions): UsageCustomRange => {
+export const buildDefaultCustomRange = ({ unit, nowMs, timeZone, maxDayRangeDays }: BuildDefaultCustomRangeOptions): UsageCustomRange => {
   if (unit === 'day') {
-    const { todayCalendarMs, today } = getCustomDayBounds({ nowMs, timeZone });
+    const { todayCalendarMs, today } = getCustomDayBounds({ nowMs, timeZone, maxDayRangeDays });
     const startDate = new Date(todayCalendarMs - 6 * DAY_MS);
     return {
       unit,

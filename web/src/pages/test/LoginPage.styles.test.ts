@@ -6,6 +6,7 @@ const themeStyles = readFileSync(new URL('../../styles/themes.scss', import.meta
 const pageShellRules = loginPageStyles.match(/\.pageShell\s*\{[\s\S]*?\n\}/g) ?? []
 const pageShellStyles = pageShellRules[0] ?? ''
 const pageShellBackground = pageShellStyles.match(/background:\s*([\s\S]*?);/)?.[1] ?? ''
+const eyebrowStyles = loginPageStyles.match(/\.eyebrow\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
 
 describe('LoginPage layout styles', () => {
   it('ends the login surface on the base theme background without an edge glow', () => {
@@ -22,12 +23,31 @@ describe('LoginPage layout styles', () => {
     expect(loginPageStyles).toMatch(/\.frame\s*\{[\s\S]*?gap:\s*64px;/)
   })
 
+  it('nudges the desktop brand block upward without shifting the mobile layout', () => {
+    expect(loginPageStyles).toMatch(/\.brandBlock\s*\{[\s\S]*?transform:\s*translateY\(-50px\);/)
+    expect(loginPageStyles).toMatch(/\.brandBlock\s*\{[\s\S]*?@include mobile\s*\{[\s\S]*?transform:\s*none;/)
+  })
+
   it('keeps the compact single-column layout on mobile', () => {
     expect(loginPageStyles).toMatch(/@include mobile\s*\{[\s\S]*?grid-template-columns:\s*1fr;[\s\S]*?gap:\s*18px;/)
   })
 
   it('preserves intentional line breaks in localized login titles', () => {
     expect(loginPageStyles).toMatch(/\.title\s*\{[\s\S]*?white-space:\s*pre-line;/)
+  })
+
+  it('uses tuned desktop brand typography without enlarging the mobile title', () => {
+    expect(loginPageStyles).toMatch(/\.title\s*\{[\s\S]*?font-size:\s*60px;/)
+    expect(loginPageStyles).toMatch(/\.title\s*\{[\s\S]*?@include mobile\s*\{[\s\S]*?font-size:\s*38px;/)
+    expect(loginPageStyles).toMatch(/\.subtitle\s*\{[\s\S]*?font-size:\s*16px;/)
+  })
+
+  it('renders a larger standalone brand mark without pill chrome', () => {
+    expect(eyebrowStyles).toMatch(/border:\s*0;/)
+    expect(eyebrowStyles).toMatch(/border-radius:\s*0;/)
+    expect(eyebrowStyles).toMatch(/background:\s*transparent;/)
+    expect(eyebrowStyles).toMatch(/padding:\s*0;/)
+    expect(eyebrowStyles).toMatch(/font-size:\s*20px;/)
   })
 
   it('keeps the login card width stable when localized copy changes', () => {

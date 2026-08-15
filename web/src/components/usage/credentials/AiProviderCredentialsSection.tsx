@@ -4,7 +4,8 @@ import type { AiProviderCredentialRow } from './credentialViewModels'
 import type { UsageIdentityPageSort } from '@/lib/api'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
-import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { ProviderBrandIcon } from '@/components/ProviderBrandIcon'
 
 interface AiProviderCredentialsSectionProps {
   rows: AiProviderCredentialRow[]
@@ -46,6 +47,7 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
       {rows.map((row) => (
         <CredentialRowShell
           key={row.identity.id || row.identity.identity}
+          icon={<ProviderBrandIcon providerType={row.identity.type} size={30} ariaLabel={row.typeLabel} />}
           title={onSaveAlias ? (
             <CredentialAliasEditor
               identityId={row.identity.id}
@@ -56,12 +58,11 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
               onSaveAlias={onSaveAlias}
             />
           ) : row.displayName}
-          subtitle={(
+          subtitle={row.priorityLabel ? (
             <span className={styles.credentialIdentityBadges}>
-              <CredentialBadge>{row.typeLabel}</CredentialBadge>
-              {row.priorityLabel && <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>}
+              <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>
             </span>
-          )}
+          ) : undefined}
           badges={null}
           metrics={(
             <>

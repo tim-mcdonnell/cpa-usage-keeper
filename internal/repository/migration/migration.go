@@ -67,6 +67,20 @@ const (
 	migrationModelPriceRules = "20260723_model_price_rules"
 	// migrationQuotaObservations 创建 append-only quota observation 事件表。
 	migrationQuotaObservations = "20260723_quota_observations"
+	// migrationUsageAggregationCheckpoints 原子合并 Overview/Activity 两张旧水位表。
+	migrationUsageAggregationCheckpoints = "20260726_usage_aggregation_checkpoints"
+	// migrationUsageLatencyStats 用可恢复短事务回填 Latency hour/day 单表。
+	migrationUsageLatencyStats = "20260726_usage_latency_stats"
+	// migrationAddUsageEventClientMetadata 保存 CPA 新增的客户端请求元数据，历史行保持 NULL。
+	migrationAddUsageEventClientMetadata = "20260729_add_usage_event_client_metadata"
+	// migrationCreateUsageEventArchive 创建永久冷表；运行期归档在 schema 完成后才会启动。
+	migrationCreateUsageEventArchive = "20260730_create_usage_event_archive"
+	// migrationLocalRankingStats 创建固定四周期的本地排行累计。
+	migrationLocalRankingStats = "20260731_local_ranking_stats"
+	// migrationAddCPAAPIKeyLocalRankingAvatar 保存可空的本地排行头像覆盖值。
+	migrationAddCPAAPIKeyLocalRankingAvatar = "20260803_add_cpa_api_key_local_ranking_avatar"
+	// migrationAddAuthSessionClientMetadata 保存会话客户端与最近活动信息，旧会话只回填活动时间。
+	migrationAddAuthSessionClientMetadata = "20260813_add_auth_session_client_metadata"
 )
 
 type schemaMigration struct {
@@ -176,6 +190,15 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationUsageOverviewFiveDimensions, run: usageOverviewFiveDimensionsMigration, disableTransaction: true},
 		{version: migrationModelPriceRules, run: createModelPriceRulesMigration},
 		{version: migrationQuotaObservations, run: createQuotaObservationsMigration},
+		// 通用水位建表、复制、验证和旧表删除必须由默认外层事务共同保护。
+		{version: migrationUsageAggregationCheckpoints, run: usageAggregationCheckpointsMigration},
+		// Latency 回填逐页提交，外层长事务会破坏断点续跑语义。
+		{version: migrationUsageLatencyStats, run: usageLatencyStatsMigration, disableTransaction: true},
+		{version: migrationAddUsageEventClientMetadata, run: addUsageEventClientMetadataMigration},
+		{version: migrationCreateUsageEventArchive, run: createUsageEventArchiveMigration},
+		{version: migrationLocalRankingStats, run: localRankingStatsMigration},
+		{version: migrationAddCPAAPIKeyLocalRankingAvatar, run: addCPAAPIKeyLocalRankingAvatarMigration},
+		{version: migrationAddAuthSessionClientMetadata, run: addAuthSessionClientMetadataMigration},
 	}
 }
 

@@ -90,9 +90,6 @@ func TestNormalizeCodexQuotaRows(t *testing.T) {
 	}
 	primary := findQuotaRow(t, rows, "rate_limit.primary_window")
 	assertQuotaText(t, primary, "5h", "window", "")
-	if primary.PlanType != "plus" {
-		t.Fatalf("expected primary planType plus, got %#v", primary.PlanType)
-	}
 	assertFloatField(t, primary.UsedPercent, 25, "primary usedPercent")
 	assertIntField(t, primary.Window.Seconds, 18000, "primary window seconds")
 	assertIntField(t, primary.ResetAfterSeconds, 1200, "primary resetAfterSeconds")
@@ -109,9 +106,6 @@ func TestNormalizeCodexQuotaRows(t *testing.T) {
 	assertQuotaText(t, codeReview, "Code Review 5h", "code_review", "")
 	additional := findQuotaRow(t, rows, "additional_rate_limits.codex-spark.primary_window")
 	assertQuotaText(t, additional, "codex-spark 5h", "additional", "spark")
-	if additional.PlanType != "plus" {
-		t.Fatalf("expected additional planType plus, got %#v", additional.PlanType)
-	}
 	assertFloatField(t, additional.UsedPercent, 12, "additional usedPercent")
 }
 

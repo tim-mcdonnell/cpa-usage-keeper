@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,14 +13,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
-
 var allowedUsageEventsPageSizes = map[int]struct{}{
-	20:   {},
-	50:   {},
-	100:  {},
-	500:  {},
-	1000: {},
+	20:  {},
+	50:  {},
+	100: {},
 }
+
+const usageEventsCustomDayRangeMaxDays = 90
 
 func writeUsageFilterParseError(c *gin.Context, err error) {
 	status := http.StatusBadRequest
@@ -48,9 +48,9 @@ func parseKeyUsageOverviewTimeFilterQuery(req *http.Request, anchor time.Time) (
 	return parseUsageTimeFilterQueryWithOptions(req, anchor, false, timeutil.UsageQueryRangeOptions{MaxCustomDayRangeDays: timeutil.LongCustomDayRangeMaxDays})
 }
 
-// Events 直接查询仍在保留期内的原始事件，因此只放宽至统一的一年上限。
+// Events 直接查询热表原始事件，Custom 日范围与 90 天保留窗口保持一致。
 func parseUsageEventsTimeFilterQuery(req *http.Request, anchor time.Time) (servicedto.UsageFilter, error) {
-	return parseUsageTimeFilterQueryWithOptions(req, anchor, true, timeutil.UsageQueryRangeOptions{MaxCustomDayRangeDays: timeutil.LongCustomDayRangeMaxDays})
+	return parseUsageTimeFilterQueryWithOptions(req, anchor, true, timeutil.UsageQueryRangeOptions{MaxCustomDayRangeDays: usageEventsCustomDayRangeMaxDays})
 }
 
 // Analysis 主数据来自 hourly/daily 汇总，因此和 Overview 一样放宽至统一的一年上限。
@@ -112,6 +112,32 @@ func parseUsageAPIKeyID(value string) (string, error) {
 	}
 	return apiKeyID, nil
 }
+func encodeUsageEventsCursor(timestamp time.Time, id int64) string {
+	payload := timeutil.NormalizeStorageTime(timestamp).Format(time.RFC3339Nano) + "|" + strconv.FormatInt(id, 10)
+	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+func decodeUsageEventsCursor(value string) (time.Time, int64, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor")
+	}
+	payload := string(decoded)
+	separator := strings.LastIndexByte(payload, '|')
+	if separator <= 0 || separator >= len(payload)-1 {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor")
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, payload[:separator])
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor")
+	}
+	id, err := strconv.ParseInt(payload[separator+1:], 10, 64)
+	if err != nil || id <= 0 {
+		return time.Time{}, 0, fmt.Errorf("invalid cursor")
+	}
+	return timeutil.NormalizeStorageTime(timestamp), id, nil
+}
+
 
 func parseUsageFilterQuery(req *http.Request, anchor time.Time) (servicedto.UsageFilter, error) {
 	if req == nil {
@@ -148,6 +174,27 @@ func parseUsageFilterQuery(req *http.Request, anchor time.Time) (servicedto.Usag
 		filter.Limit = pageSize
 	}
 	filter.Offset = (filter.Page - 1) * filter.PageSize
+	cursorModeValue := strings.TrimSpace(query.Get("cursor_mode"))
+	if cursorModeValue != "" {
+		cursorMode, err := strconv.ParseBool(cursorModeValue)
+		if err != nil {
+			return servicedto.UsageFilter{}, fmt.Errorf("invalid cursor_mode %q", cursorModeValue)
+		}
+		filter.CursorMode = cursorMode
+	}
+	if cursorValue := strings.TrimSpace(query.Get("cursor")); cursorValue != "" {
+		cursorTimestamp, cursorID, err := decodeUsageEventsCursor(cursorValue)
+		if err != nil {
+			return servicedto.UsageFilter{}, err
+		}
+		filter.CursorMode = true
+		filter.CursorTimestamp = &cursorTimestamp
+		filter.CursorID = cursorID
+	}
+	if filter.CursorMode {
+		filter.Page = 1
+		filter.Offset = 0
+	}
 	filter.Model = strings.TrimSpace(query.Get("model"))
 	// Request Events 前端参数仍叫 source，但它的值是 usage identity；路由层会转换成 auth_index 查询。
 	filter.Source = strings.TrimSpace(query.Get("source"))

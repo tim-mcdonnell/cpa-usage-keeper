@@ -25,8 +25,6 @@ type ServiceOptions struct {
 	Estimator                        estimate.Estimator
 }
 
-const usageHeaderSnapshotQueueSize = 100
-
 type Service struct {
 	db        *gorm.DB
 	registry  ProviderRegistry
@@ -67,11 +65,12 @@ type Service struct {
 	// refreshWG 跟踪 service 派生的 dispatcher/worker/scheduler goroutine，App 关闭 DB 前会等待它们退出。
 	refreshWG sync.WaitGroup
 
-	usageHeaderCh            chan []UsageHeaderSnapshot
-	usageHeaderSlots         chan struct{}
+	usageHeaderPending       map[string]UsageHeaderSnapshot
+	usageHeaderWake          chan struct{}
 	usageHeaderStopCh        chan struct{}
 	usageHeaderDoneCh        chan struct{}
 	usageHeaderFlushInterval time.Duration
+	usageHeaderNewTimer      func(time.Duration) (<-chan time.Time, func())
 	usageHeaderMu            sync.Mutex
 	usageHeaderClosing       bool
 	usageHeaderCloseOnce     sync.Once
@@ -84,9 +83,10 @@ type CheckRequest struct {
 }
 
 type CheckResponse struct {
-	ID                                  string     `json:"id"`
-	Quota                               []QuotaRow `json:"quota"`
-	RateLimitResetCreditsAvailableCount *int       `json:"rateLimitResetCreditsAvailableCount,omitempty"`
+	ID                                  string            `json:"id"`
+	Quota                               []QuotaRow        `json:"quota"`
+	Subscription                        *SubscriptionInfo `json:"subscription,omitempty"`
+	RateLimitResetCreditsAvailableCount *int              `json:"rateLimitResetCreditsAvailableCount,omitempty"`
 }
 
 func NewService(db *gorm.DB, caller ManagementAPICaller, pricingCatalog *pricing.Catalog) *Service {
@@ -135,14 +135,12 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		refreshContext:             refreshContext,
 		refreshCancel:              refreshCancel,
 		autoRefreshSettingsChanged: make(chan struct{}, 1),
-		usageHeaderCh:              make(chan []UsageHeaderSnapshot, usageHeaderSnapshotQueueSize),
-		usageHeaderSlots:           make(chan struct{}, usageHeaderSnapshotQueueSize),
+		usageHeaderPending:         make(map[string]UsageHeaderSnapshot, usageHeaderPendingIdentityLimit),
+		usageHeaderWake:            make(chan struct{}, 1),
 		usageHeaderStopCh:          make(chan struct{}),
 		usageHeaderDoneCh:          make(chan struct{}),
 		usageHeaderFlushInterval:   usageHeaderFlushInterval,
-	}
-	for i := 0; i < usageHeaderSnapshotQueueSize; i++ {
-		service.usageHeaderSlots <- struct{}{}
+		usageHeaderNewTimer:        newUsageHeaderTimer,
 	}
 	service.observationRecorder = newQuotaObservationRecorder(
 		repositoryQuotaObservationStore{db: db},
@@ -273,8 +271,13 @@ func (s *Service) checkWithSnapshot(ctx context.Context, request CheckRequest) (
 	}
 	observedAt := timeutil.NormalizeStorageTime(time.Now())
 	response := CheckResponse{
-		ID:    authIndex,
-		Quota: NormalizeQuotaRows(providerOutput),
+		ID:           authIndex,
+		Quota:        NormalizeQuotaRows(providerOutput),
+		Subscription: NormalizeSubscription(providerOutput),
+	}
+	// 实时结果没有套餐时仅允许回退当前 Identity metadata；现在只有 Codex 具备该来源。
+	if response.Subscription == nil {
+		response.Subscription = ResolveIdentitySubscription(identity)
 	}
 	// reset 次数跟随官方刷新结果写入同一份限额缓存，前端只展示缓存里的官方值。
 	if count, ok := rateLimitResetCreditsAvailableCount(providerOutput); ok {

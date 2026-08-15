@@ -22,6 +22,13 @@ type AnalysisTokenUsageBucket struct {
 	CostAvailable       bool
 }
 
+type AnalysisModelUsage struct {
+	Bucket      time.Time
+	Model       string
+	TotalTokens int64
+	Requests    int64
+}
+
 type AnalysisCompositionItem struct {
 	Key                 string
 	Label               string
@@ -105,6 +112,7 @@ type AnalysisSnapshot struct {
 	RangeStart            *time.Time
 	RangeEnd              *time.Time
 	TokenUsage            []AnalysisTokenUsageBucket
+	ModelUsage            []AnalysisModelUsage
 	APIKeyComposition     []AnalysisCompositionItem
 	ModelComposition      []AnalysisCompositionItem
 	AuthFilesComposition  []AnalysisCompositionItem

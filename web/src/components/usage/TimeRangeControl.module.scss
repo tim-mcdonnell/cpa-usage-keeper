@@ -358,14 +358,6 @@
   gap: 8px;
 }
 
-.customRangeAction:global(.btn.btn-sm) {
-  min-height: 32px;
-  padding: 7px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .customPickerHeader {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) 28px;

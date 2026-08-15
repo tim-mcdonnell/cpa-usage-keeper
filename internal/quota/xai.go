@@ -15,6 +15,8 @@ type xaiProvider struct {
 	monthlyConfig APICallConfig
 }
 
+const xaiWeeklyBillingQuotaKey = "billing.weekly"
+
 func NewXAIProvider(caller ManagementAPICaller, weeklyConfig APICallConfig, monthlyConfig APICallConfig) ProviderHandler {
 	return xaiProvider{caller: caller, weeklyConfig: weeklyConfig, monthlyConfig: monthlyConfig}
 }
@@ -108,4 +110,9 @@ func hasXAIBillingQuotaRows(billing *XAIBillingPayload, period string) bool {
 		return false
 	}
 	return len(normalizeXAIQuotaRows(result)) > 0
+}
+
+func isXAIWeeklyUsageWindowQuotaRow(row QuotaRow) bool {
+	// xAI Weekly 虽来自 billing endpoint，但它有明确的 auth 级七天窗口，可以复用本地窗口统计。
+	return row.Key == xaiWeeklyBillingQuotaKey && strings.EqualFold(strings.TrimSpace(row.Scope), "billing")
 }

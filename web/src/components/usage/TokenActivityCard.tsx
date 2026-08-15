@@ -50,11 +50,13 @@ export function TokenActivityCard({ activity, loading, requestIdentity }: TokenA
   ].join(', ');
 
   return (
-    <article className={`${styles.activityCard} ${styles.tokenActivityCard}`} aria-busy={loading}>
+    <article className={`${styles.activityCard} ${styles.tokenActivityCard} keeper-card-surface`} aria-busy={loading}>
       <div className={styles.activityCardHeader}>
-        <div className={styles.sectionTitleBlock}>
-          <h3 className={styles.sectionTitle}>{t('usage_stats.token_activity_title')}</h3>
-          <p className={styles.sectionSubtitle}>{t('usage_stats.token_activity_subtitle')}</p>
+        <div className="keeper-card-heading">
+          <div className="keeper-card-title-track">
+            <h3 className="keeper-card-title">{t('usage_stats.token_activity_title')}</h3>
+          </div>
+          <p className="keeper-card-subtitle">{t('usage_stats.token_activity_subtitle')}</p>
         </div>
         <div className={styles.activitySummary} data-activity-summary="token">
           <span className={styles.activitySummaryLabel}>{t('usage_stats.token_activity_total_tokens')}</span>

@@ -111,7 +111,7 @@ func TestOpenDatabasePoolsAutomaticallyRoutesQueriesAndWrites(t *testing.T) {
 }
 
 func TestOpenDatabasePoolsKeepsDefaultTransactionOnWriter(t *testing.T) {
-	// 准备：占满四条 reader，验证默认事务不依赖任何 reader 连接。
+	// 准备：占满全部 reader，验证默认事务不依赖任何 reader 连接。
 	db, reader, err := repository.OpenDatabasePools(config.Config{SQLitePath: filepath.Join(t.TempDir(), "app.db")})
 	if err != nil {
 		t.Fatalf("OpenDatabasePools returned error: %v", err)
@@ -125,8 +125,9 @@ func TestOpenDatabasePoolsKeepsDefaultTransactionOnWriter(t *testing.T) {
 		t.Fatalf("load reader sql db: %v", err)
 	}
 	closeResolverTestPools(t, writerSQL, readerSQL)
-	heldReaders := make([]*sql.Conn, 0, 4)
-	for index := 0; index < 4; index++ {
+	readerLimit := readerSQL.Stats().MaxOpenConnections
+	heldReaders := make([]*sql.Conn, 0, readerLimit)
+	for index := 0; index < readerLimit; index++ {
 		connection, err := readerSQL.Conn(context.Background())
 		if err != nil {
 			t.Fatalf("hold reader connection %d: %v", index, err)

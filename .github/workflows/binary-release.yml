@@ -359,7 +359,7 @@ jobs:
 
                   #{etc}/cpa-usage-keeper.env
 
-                Required values include CPA_BASE_URL and CPA_MANAGEMENT_KEY.
+                Required values include CPA_BASE_URL and CPA_MANAGEMENT_KEY. LOGIN_PASSWORD is also required unless authentication is explicitly disabled.
 
                 Start the service with:
 

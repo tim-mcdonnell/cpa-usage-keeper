@@ -41,15 +41,16 @@ type APICallConfig struct {
 }
 
 type ProviderConfigs struct {
-	Antigravity         []APICallConfig
-	Codex               APICallConfig
-	GeminiCLI           APICallConfig
-	GeminiCLICodeAssist APICallConfig
-	ClaudeUsage         APICallConfig
-	ClaudeProfile       APICallConfig
-	Kimi                APICallConfig
-	XAIWeekly           APICallConfig
-	XAIMonthly          APICallConfig
+	Antigravity              []APICallConfig
+	AntigravitySubscriptions []APICallConfig
+	Codex                    APICallConfig
+	GeminiCLI                APICallConfig
+	GeminiCLICodeAssist      APICallConfig
+	ClaudeUsage              APICallConfig
+	ClaudeProfile            APICallConfig
+	Kimi                     APICallConfig
+	XAIWeekly                APICallConfig
+	XAIMonthly               APICallConfig
 }
 
 func DefaultProviderConfigs() ProviderConfigs {
@@ -76,6 +77,26 @@ func DefaultProviderConfigs() ProviderConfigs {
 			{
 				Method: "POST",
 				URL:    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+				Headers: map[string]string{
+					"Authorization": "Bearer $TOKEN$",
+					"Content-Type":  "application/json",
+					"User-Agent":    "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)",
+				},
+			},
+		},
+		AntigravitySubscriptions: []APICallConfig{
+			{
+				Method: "POST",
+				URL:    "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+				Headers: map[string]string{
+					"Authorization": "Bearer $TOKEN$",
+					"Content-Type":  "application/json",
+					"User-Agent":    "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)",
+				},
+			},
+			{
+				Method: "POST",
+				URL:    "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
 				Headers: map[string]string{
 					"Authorization": "Bearer $TOKEN$",
 					"Content-Type":  "application/json",
@@ -158,8 +179,9 @@ func xaiRequestHeaders() map[string]string {
 }
 
 func (c ProviderConfigs) APICallTemplates() []APICallConfig {
-	templates := make([]APICallConfig, 0, len(c.Antigravity)+8)
+	templates := make([]APICallConfig, 0, len(c.Antigravity)+len(c.AntigravitySubscriptions)+8)
 	templates = append(templates, c.Antigravity...)
+	templates = append(templates, c.AntigravitySubscriptions...)
 	templates = append(templates,
 		c.Codex,
 		c.GeminiCLI,

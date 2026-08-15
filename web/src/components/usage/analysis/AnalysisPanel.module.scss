@@ -8,15 +8,12 @@
 }
 
 .analysisCard {
-  border: 1px solid var(--border-color);
-  border-radius: 24px;
-  background: var(--bg-primary);
-  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.07);
-  padding: 20px;
+  padding: var(--keeper-card-padding);
   min-width: 0;
 }
 
 .tokenUsageCard,
+.topModelsCard,
 .latencyDiagnosticsCard,
 .heatmapCard {
   min-height: 420px;
@@ -42,32 +39,13 @@
   flex-direction: column;
   gap: 6px;
   margin-bottom: 16px;
-
-  h2 {
-    margin: 0;
-    font-size: 18px;
-    line-height: 1.2;
-    color: var(--text-primary);
-  }
-
-  p {
-    margin: 0;
-    color: var(--text-secondary);
-    font-size: 13px;
-    line-height: 1.45;
-  }
 }
 
 .cardTitleLine {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
   gap: 14px;
   min-width: 0;
-
-  h2 {
-    min-width: 0;
-  }
 
   @include mobile {
     flex-wrap: wrap;
@@ -143,6 +121,139 @@
 
   :global(canvas) {
     touch-action: pan-x pan-y !important;
+  }
+}
+
+.topModelsCard {
+  min-height: 500px;
+}
+
+.topModelsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.topModelsChartFrame {
+  height: 310px;
+  min-width: 0;
+
+  :global(canvas) {
+    touch-action: pan-x pan-y !important;
+  }
+
+  @include mobile {
+    height: 270px;
+  }
+}
+
+.topModelsRanking {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  @include desktop {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  li {
+    min-width: 0;
+  }
+}
+
+.topModelsRankItem {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 24px 10px minmax(0, 1fr) auto 58px;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
+
+  &:hover,
+  &:focus-visible {
+    border-color: color-mix(in srgb, var(--top-model-color) 68%, var(--border-color));
+    background: color-mix(in srgb, var(--top-model-color) 9%, var(--bg-secondary));
+  }
+
+  @include mobile {
+    grid-template-columns: 20px 9px minmax(0, 1fr) auto 50px;
+    gap: 7px;
+    padding-inline: 9px;
+  }
+}
+
+.topModelsRankItem[data-muted='true'] .topModelsColor {
+  opacity: 0.42;
+}
+
+.topModelsRankItem:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--bg-primary);
+}
+
+.topModelsRank {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.topModelsColor {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--top-model-color);
+
+  @include mobile {
+    width: 9px;
+    height: 9px;
+  }
+}
+
+.topModelsName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topModelsTokens,
+.topModelsShare {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.topModelsShare {
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topModelsRankItem {
+    transition-duration: 0.01ms;
   }
 }
 

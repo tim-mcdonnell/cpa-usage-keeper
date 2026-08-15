@@ -125,88 +125,6 @@ func TestBuildAnalysisWithFilterUsesOverviewStatsWithoutUsageEvents(t *testing.T
 	}
 }
 
-func TestBuildAnalysisLatencyDiagnosticsWithFilterBuildsFromUsageEvents(t *testing.T) {
-	db := openUsageTestDatabase(t)
-	start := time.Date(2026, 4, 20, 9, 0, 0, 0, time.UTC)
-	end := start.Add(time.Hour)
-	ttft120 := int64(120)
-	ttft300 := int64(300)
-	ttft450 := int64(450)
-	ttft900 := int64(900)
-	ttftFailed := int64(2500)
-	ttftZero := int64(0)
-	ttftOutside := int64(80)
-	ttftOtherKey := int64(700)
-	if err := db.Create([]entities.CPAAPIKey{
-		{APIKey: "sk-target-key", DisplayKey: "sk-*********target"},
-		{APIKey: "sk-other-key", DisplayKey: "sk-*********other"},
-	}).Error; err != nil {
-		t.Fatalf("insert CPA API keys: %v", err)
-	}
-	if _, _, err := InsertUsageEvents(db, []entities.UsageEvent{
-		{EventKey: "latency-1", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(5 * time.Minute), LatencyMS: 1000, TTFTMS: &ttft120},
-		{EventKey: "latency-2", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(10 * time.Minute), LatencyMS: 1600, TTFTMS: &ttft300},
-		{EventKey: "latency-3", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(20 * time.Minute), LatencyMS: 2300, TTFTMS: &ttft450},
-		{EventKey: "latency-4", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(30 * time.Minute), LatencyMS: 5000, TTFTMS: &ttft900},
-		{EventKey: "failed-latency", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(31 * time.Minute), Failed: true, LatencyMS: 20000, TTFTMS: &ttftFailed},
-		{EventKey: "zero-ttft", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(32 * time.Minute), LatencyMS: 6000, TTFTMS: &ttftZero},
-		{EventKey: "missing-ttft", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(35 * time.Minute), LatencyMS: 7000},
-		{EventKey: "outside-window", APIGroupKey: "sk-target-key", Model: "claude-sonnet", Timestamp: start.Add(-time.Minute), LatencyMS: 900, TTFTMS: &ttftOutside},
-		{EventKey: "other-key", APIGroupKey: "sk-other-key", Model: "claude-sonnet", Timestamp: start.Add(15 * time.Minute), LatencyMS: 4100, TTFTMS: &ttftOtherKey},
-	}); err != nil {
-		t.Fatalf("InsertUsageEvents returned error: %v", err)
-	}
-
-	diagnostics, err := BuildAnalysisLatencyDiagnosticsWithFilter(db, repodto.UsageQueryFilter{StartTime: &start, EndTime: &end, APIGroupKey: "sk-target-key"})
-	if err != nil {
-		t.Fatalf("BuildAnalysisLatencyDiagnosticsWithFilter returned error: %v", err)
-	}
-	if diagnostics.TotalPoints != 4 || diagnostics.Sampled {
-		t.Fatalf("expected four unsampled latency points, got %+v", diagnostics)
-	}
-	if diagnostics.P95TTFTMS != 900 || diagnostics.P95LatencyMS != 5000 {
-		t.Fatalf("expected nearest-rank p95 from all matching rows, got %+v", diagnostics)
-	}
-	if diagnostics.MaxTTFTMS != 900 || diagnostics.MaxLatencyMS != 5000 {
-		t.Fatalf("expected axis max values from matching rows, got %+v", diagnostics)
-	}
-	if got := diagnostics.Points; len(got) != 4 || got[0].TTFTMS != 120 || got[0].LatencyMS != 1000 || got[3].TTFTMS != 900 || got[3].LatencyMS != 5000 {
-		t.Fatalf("expected latency points to preserve queried sample values, got %+v", got)
-	}
-	if len(diagnostics.Density) != 0 {
-		t.Fatalf("expected latency diagnostics to skip unused density cells, got %+v", diagnostics.Density)
-	}
-}
-
-func TestBuildAnalysisLatencyDiagnosticsSamplesDisplayPointsFromFullValues(t *testing.T) {
-	count := analysisLatencyMaxDisplayPoints + 100
-	ttftValues := make([]int64, 0, count)
-	latencyValues := make([]int64, 0, count)
-	for index := 0; index < count; index++ {
-		value := int64(index + 1)
-		ttftValues = append(ttftValues, value)
-		latencyValues = append(latencyValues, value*10)
-	}
-
-	diagnostics := buildAnalysisLatencyDiagnostics(ttftValues, latencyValues, int64(count), int64(count*10))
-
-	if diagnostics.TotalPoints != int64(count) || !diagnostics.Sampled {
-		t.Fatalf("expected full count with sampled display points, got %+v", diagnostics)
-	}
-	if len(diagnostics.Points) != analysisLatencyMaxDisplayPoints {
-		t.Fatalf("expected display points to be capped at %d, got %d", analysisLatencyMaxDisplayPoints, len(diagnostics.Points))
-	}
-	if diagnostics.P95TTFTMS != 2470 || diagnostics.P95LatencyMS != 24700 {
-		t.Fatalf("expected exact nearest-rank p95 from all values, got %+v", diagnostics)
-	}
-	if diagnostics.Points[0].TTFTMS != 1 || diagnostics.Points[len(diagnostics.Points)-1].TTFTMS != int64(count) {
-		t.Fatalf("expected sampled points to preserve range endpoints, got first=%+v last=%+v", diagnostics.Points[0], diagnostics.Points[len(diagnostics.Points)-1])
-	}
-	if len(diagnostics.Density) != 0 {
-		t.Fatalf("expected density to stay empty for simple scatter diagnostics, got %+v", diagnostics.Density)
-	}
-}
-
 func TestBuildAnalysisWithFilterCalculatesCostInsightsFromOverviewStats(t *testing.T) {
 	db := openUsageTestDatabase(t)
 	bucket := time.Date(2026, 4, 20, 9, 0, 0, 0, time.UTC)
@@ -570,24 +488,36 @@ func TestBuildAnalysisWithFilterFillsTodayAndYesterdayHourlyBucketsFromStats(t *
 	}
 }
 
-func TestBuildAnalysisWithFilterIncludesPartialCurrentDayInDailyRanges(t *testing.T) {
+func TestBuildAnalysisWithFilterUsesCurrentDailyRollupInDailyRanges(t *testing.T) {
 	withRepositoryTestLocation(t, "UTC")
 	db := openUsageTestDatabase(t)
 	start := time.Date(2026, 5, 11, 10, 15, 0, 0, time.UTC)
 	end := time.Date(2026, 5, 18, 18, 30, 0, 0, time.UTC)
 	yesterday := time.Date(2026, 5, 17, 0, 0, 0, 0, time.UTC)
+	currentDay := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
 	currentDayHour := time.Date(2026, 5, 18, 9, 0, 0, 0, time.UTC)
 	if err := db.Create(&entities.CPAAPIKey{APIKey: "sk-target-key", DisplayKey: "sk-*********target"}).Error; err != nil {
 		t.Fatalf("insert CPA API key: %v", err)
 	}
-	if err := db.Create(&entities.UsageOverviewDailyStat{
-		BucketStart:  yesterday,
-		APIGroupKey:  "sk-target-key",
-		Model:        "claude-sonnet",
-		RequestCount: 2,
-		InputTokens:  10,
-		OutputTokens: 20,
-		TotalTokens:  30,
+	if err := db.Create([]entities.UsageOverviewDailyStat{
+		{
+			BucketStart:  yesterday,
+			APIGroupKey:  "sk-target-key",
+			Model:        "claude-sonnet",
+			RequestCount: 2,
+			InputTokens:  10,
+			OutputTokens: 20,
+			TotalTokens:  30,
+		},
+		{
+			BucketStart:  currentDay,
+			APIGroupKey:  "sk-target-key",
+			Model:        "claude-sonnet",
+			RequestCount: 4,
+			InputTokens:  40,
+			OutputTokens: 50,
+			TotalTokens:  90,
+		},
 	}).Error; err != nil {
 		t.Fatalf("insert daily stat: %v", err)
 	}
@@ -605,10 +535,10 @@ func TestBuildAnalysisWithFilterIncludesPartialCurrentDayInDailyRanges(t *testin
 			BucketStart:  currentDayHour,
 			APIGroupKey:  "sk-target-key",
 			Model:        "claude-sonnet",
-			RequestCount: 4,
-			InputTokens:  40,
-			OutputTokens: 50,
-			TotalTokens:  90,
+			RequestCount: 40,
+			InputTokens:  400,
+			OutputTokens: 500,
+			TotalTokens:  900,
 		},
 	}).Error; err != nil {
 		t.Fatalf("insert hourly stats: %v", err)
@@ -633,11 +563,11 @@ func TestBuildAnalysisWithFilterIncludesPartialCurrentDayInDailyRanges(t *testin
 			if !analysis.TokenUsage[0].Bucket.Equal(yesterday) || analysis.TokenUsage[0].TotalTokens != 30 || analysis.TokenUsage[0].Requests != 2 {
 				t.Fatalf("expected yesterday daily stats first, got %+v", analysis.TokenUsage[0])
 			}
-			if !analysis.TokenUsage[1].Bucket.Equal(time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)) || analysis.TokenUsage[1].TotalTokens != 90 || analysis.TokenUsage[1].Requests != 4 {
-				t.Fatalf("expected current-day hourly stats to be folded into daily bucket, got %+v", analysis.TokenUsage[1])
+			if !analysis.TokenUsage[1].Bucket.Equal(currentDay) || analysis.TokenUsage[1].TotalTokens != 90 || analysis.TokenUsage[1].Requests != 4 {
+				t.Fatalf("expected current-day daily stats, got %+v", analysis.TokenUsage[1])
 			}
 			if len(analysis.APIKeyComposition) != 1 || analysis.APIKeyComposition[0].TotalTokens != 120 || analysis.APIKeyComposition[0].Requests != 6 {
-				t.Fatalf("expected compositions to include daily and current-day hourly stats, got %+v", analysis.APIKeyComposition)
+				t.Fatalf("expected compositions to include only daily stats, got %+v", analysis.APIKeyComposition)
 			}
 		})
 	}

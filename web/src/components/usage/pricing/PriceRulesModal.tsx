@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import type { PricingRule, ReplacePricingRuleInput } from '@/lib/types'
-import usageStyles from '@/pages/UsagePage.module.scss'
 import {
   buildPricingRuleSubmission,
   createPricingRuleDraft,
@@ -199,10 +198,10 @@ export function PriceRulesModal({
       width={760}
       footer={
         <div className={styles.footer}>
-          <Button type="button" variant="secondary" size="sm" className={styles.actionButton} onClick={closeModal} disabled={saving}>
+          <Button type="button" variant="secondary" size="sm" appearance="action" onClick={closeModal} disabled={saving}>
             {t('common.cancel')}
           </Button>
-          <Button type="button" variant="primary" size="sm" className={styles.actionButton} onClick={() => void handleSave()} loading={saving} disabled={loading || loadFailed}>
+          <Button type="button" variant="primary" size="sm" appearance="action" onClick={() => void handleSave()} loading={saving} disabled={loading || loadFailed}>
             {t('common.save')}
           </Button>
         </div>
@@ -267,7 +266,8 @@ export function PriceRulesModal({
                       type="button"
                       variant="danger"
                       size="sm"
-                      className={`${styles.removeButton} ${usageStyles.usagePillAction} ${usageStyles.usagePillActionDanger}`}
+                      appearance="action"
+                      className={styles.removeButton}
                       onClick={() => removeDraft(draft.id)}
                       disabled={saving}
                       aria-label={t('usage_stats.model_price_rules_remove')}
@@ -283,7 +283,7 @@ export function PriceRulesModal({
                 type="button"
                 variant="secondary"
                 size="sm"
-                className={styles.actionButton}
+                appearance="action"
                 onClick={() => setDrafts((current) => [...current, createPricingRuleDraft()])}
                 disabled={saving}
               >

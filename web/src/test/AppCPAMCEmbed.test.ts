@@ -31,6 +31,14 @@ describe('App CPAMC embed shell', () => {
     expect(embedStyles).not.toContain('scale(');
   });
 
+  it('inherits the global card, modal, and title contract without embed overrides', () => {
+    expect(embedStyles).not.toContain('--keeper-card-');
+    expect(embedStyles).not.toMatch(/\.card(?:\s|,|\{)/);
+    expect(embedStyles).not.toMatch(/\.modal(?:\s|,|\{)/);
+    expect(embedStyles).not.toContain('keeper-card-title');
+    expect(embedStyles).not.toContain('font-size:');
+  });
+
   it('preserves the CPAMC embed query when normalizing app paths', () => {
     const replaceStateTargets = Array.from(appSource.matchAll(/window\.history\.replaceState\(null, '', ([\s\S]*?)\);/g)).map((match) => match[1]);
 

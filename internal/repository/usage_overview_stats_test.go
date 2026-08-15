@@ -178,8 +178,8 @@ func assertUsageOverviewStatValues(t *testing.T, label string, gotRequestCount, 
 
 func assertUsageOverviewCheckpoint(t *testing.T, db *gorm.DB, wantLastID int64) {
 	t.Helper()
-	var checkpoint entities.UsageOverviewAggregationCheckpoint
-	if err := db.Where("name = ?", "overview").First(&checkpoint).Error; err != nil {
+	var checkpoint entities.UsageAggregationCheckpoint
+	if err := db.Where("name = ?", entities.UsageAggregationCheckpointOverview).First(&checkpoint).Error; err != nil {
 		t.Fatalf("load overview checkpoint: %v", err)
 	}
 	if checkpoint.LastAggregatedUsageEventID != wantLastID || checkpoint.StatsUpdatedAt == nil {

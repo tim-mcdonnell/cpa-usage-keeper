@@ -15,6 +15,7 @@ func TestAllIncludesCoreModels(t *testing.T) {
 	items := All()
 	expected := []any{
 		&UsageEvent{},
+		&UsageEventArchive{},
 		&RedisUsageInbox{},
 		&ModelPriceSetting{},
 		&ModelPriceRule{},
@@ -22,11 +23,13 @@ func TestAllIncludesCoreModels(t *testing.T) {
 		&CPAAPIKey{},
 		&UsageOverviewHourlyStat{},
 		&UsageOverviewDailyStat{},
-		&UsageOverviewAggregationCheckpoint{},
+		// 全局聚合只注册一张通用 checkpoint 表。
+		&UsageAggregationCheckpoint{},
+		&LocalRankingPeriodStat{},
 		// Activity 统计必须随核心模型注册，确保全新数据库直接得到新表。
 		&UsageActivityStat{},
-		// Activity checkpoint 必须独立注册，不能复用 Overview cursor。
-		&UsageActivityAggregationCheckpoint{},
+		// Latency 小时/天数据共用一张聚合表。
+		&UsageLatencyStat{},
 		&AuthSession{},
 		&AppSetting{},
 		&QuotaObservation{},

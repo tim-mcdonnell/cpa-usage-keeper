@@ -113,7 +113,7 @@ func TestBuildUsageOverviewWithFilterDoesNotRunAggregationCatchup(t *testing.T) 
 	}
 
 	var checkpointCount int64
-	if err := db.Model(&entities.UsageOverviewAggregationCheckpoint{}).Count(&checkpointCount).Error; err != nil {
+	if err := db.Model(&entities.UsageAggregationCheckpoint{}).Where("name = ?", entities.UsageAggregationCheckpointOverview).Count(&checkpointCount).Error; err != nil {
 		t.Fatalf("count overview checkpoints returned error: %v", err)
 	}
 	if checkpointCount != 0 {
@@ -921,7 +921,7 @@ func TestBuildUsageOverviewWithFilterUsesExactPresetWindowMinutes(t *testing.T) 
 				t.Fatalf("unexpected request series for %s: %+v", tc.rangeName, overview.Series.Requests)
 			}
 		})
-		for _, table := range []string{"usage_events", "usage_overview_hourly_stats", "usage_overview_daily_stats", "usage_activity_stats", "usage_overview_aggregation_checkpoints", "usage_activity_aggregation_checkpoints"} {
+		for _, table := range []string{"usage_events", "usage_overview_hourly_stats", "usage_overview_daily_stats", "usage_activity_stats", "usage_latency_stats", "usage_aggregation_checkpoints"} {
 			if err := db.Exec("DELETE FROM " + table).Error; err != nil {
 				t.Fatalf("DELETE %s returned error: %v", table, err)
 			}

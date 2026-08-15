@@ -16,6 +16,7 @@ import (
 	"cpa-usage-keeper/internal/logging"
 	"cpa-usage-keeper/internal/poller"
 	"cpa-usage-keeper/internal/quota"
+	rankinghttpapi "cpa-usage-keeper/internal/ranking/httpapi"
 	"cpa-usage-keeper/internal/service"
 	"cpa-usage-keeper/internal/updatecheck"
 	"cpa-usage-keeper/internal/version"
@@ -23,6 +24,8 @@ import (
 )
 
 const appBasePathPlaceholder = "__APP_BASE_PATH__"
+
+var loopbackTrustedProxyCIDRs = []string{"127.0.0.1/32", "::1/128"}
 
 type StatusProvider interface {
 	Status() poller.Status
@@ -54,6 +57,8 @@ type OptionalProviders struct {
 	CPAAPIKeys    service.CPAAPIKeyProvider
 	AuthFiles     service.AuthFilesManagementProvider
 	RequestLogs   service.RequestLogProvider
+	Ranking       rankinghttpapi.Provider
+	LocalRanking  rankinghttpapi.LocalProvider
 	Status        StatusRouteConfig
 }
 
@@ -68,13 +73,17 @@ func NewRouter(
 	optionalProviders ...OptionalProviders,
 ) *gin.Engine {
 	router := gin.New()
-	_ = router.SetTrustedProxies(nil)
+	trustedProxyCIDRs := append([]string{}, loopbackTrustedProxyCIDRs...)
+	trustedProxyCIDRs = append(trustedProxyCIDRs, authConfig.TrustedProxyCIDRs...)
+	_ = router.SetTrustedProxies(trustedProxyCIDRs)
+	router.RemoteIPHeaders = []string{"X-Forwarded-For"}
 	router.Use(logging.NewGinRecovery())
 
 	appGroup := router.Group(basePath)
 	registerHealthRoutes(appGroup)
 
 	apiV1 := appGroup.Group("/api/v1")
+	apiV1.Use(unauthenticatedLoginRequestLimits(basePath))
 	apiV1.Use(requestIntentMiddleware())
 	if debugAPIRoutesEnabled() {
 		registerPingRoutes(apiV1)
@@ -91,6 +100,8 @@ func NewRouter(
 	var cpaAPIKeyProvider service.CPAAPIKeyProvider
 	var authFilesProvider service.AuthFilesManagementProvider
 	var requestLogProvider service.RequestLogProvider
+	var rankingProvider rankinghttpapi.Provider
+	var localRankingProvider rankinghttpapi.LocalProvider
 	var statusConfig StatusRouteConfig
 	if len(optionalProviders) > 0 {
 		usageIdentityProvider = optionalProviders[0].UsageIdentity
@@ -98,6 +109,8 @@ func NewRouter(
 		cpaAPIKeyProvider = optionalProviders[0].CPAAPIKeys
 		authFilesProvider = optionalProviders[0].AuthFiles
 		requestLogProvider = optionalProviders[0].RequestLogs
+		rankingProvider = optionalProviders[0].Ranking
+		localRankingProvider = optionalProviders[0].LocalRanking
 		statusConfig = optionalProviders[0].Status
 	}
 	authHandler.setCPAAPIKeyProvider(cpaAPIKeyProvider)
@@ -123,6 +136,12 @@ func NewRouter(
 	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider)
 	registerPricingRoutes(adminProtected, pricingProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)
+	if rankingProvider != nil {
+		rankinghttpapi.RegisterRoutes(adminProtected, rankingProvider)
+	}
+	if localRankingProvider != nil {
+		rankinghttpapi.RegisterLocalRoutes(adminProtected, localRankingProvider)
+	}
 
 	keyViewerProtected := apiV1.Group("")
 	keyViewerProtected.Use(authHandler.apiKeyViewerMiddleware())

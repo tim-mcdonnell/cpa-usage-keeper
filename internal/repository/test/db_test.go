@@ -277,14 +277,14 @@ func TestOpenReadDatabaseConfiguresBoundedReadOnlyPool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load read sql db: %v", err)
 	}
-	// 断言：reader 的硬上限固定为四条，不继承 writer 的单连接限制。
-	if stats := readerSQL.Stats(); stats.MaxOpenConnections != 4 {
-		t.Fatalf("expected sqlite read max open connections to be 4, got %+v", stats)
+	// 断言：reader 的按需打开上限固定为八条，不继承 writer 的单连接限制。
+	if stats := readerSQL.Stats(); stats.MaxOpenConnections != 8 {
+		t.Fatalf("expected sqlite read max open connections to be 8, got %+v", stats)
 	}
 
-	// 执行：同时持有四条连接，强制 database/sql 真正创建池上限数量的物理连接。
-	connections := make([]*sql.Conn, 0, 4)
-	for index := 0; index < 4; index++ {
+	// 执行：同时持有八条连接，强制 database/sql 真正创建池上限数量的物理连接。
+	connections := make([]*sql.Conn, 0, 8)
+	for index := 0; index < 8; index++ {
 		connection, err := readerSQL.Conn(context.Background())
 		if err != nil {
 			t.Fatalf("open read connection %d: %v", index, err)
@@ -307,9 +307,17 @@ func TestOpenReadDatabaseConfiguresBoundedReadOnlyPool(t *testing.T) {
 			t.Fatalf("close read connection %d: %v", index, err)
 		}
 	}
-	// 断言：峰值结束后四条连接继续空闲常驻，下一轮读取无需重新打开 SQLite 连接。
-	if stats := readerSQL.Stats(); stats.OpenConnections != 4 || stats.Idle != 4 {
-		t.Fatalf("expected sqlite read pool to retain 4 idle connections, got %+v", stats)
+	// 断言：峰值结束后只保留四条 idle reader，额外四条按池策略关闭。
+	deadline := time.Now().Add(time.Second)
+	for {
+		stats := readerSQL.Stats()
+		if stats.OpenConnections == 4 && stats.Idle == 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected sqlite read pool to settle at 4 idle connections, got %+v", stats)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -701,7 +709,7 @@ func TestDatabaseTimeFieldsUseProjectTimezoneRFC3339Nano(t *testing.T) {
 	}
 }
 
-func TestCleanupStorageCleansRedisInboxAndVacuums(t *testing.T) {
+func TestCleanupStorageCleansRedisInboxAndAppliesVacuumPolicy(t *testing.T) {
 	previousLocal := time.Local
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -775,21 +783,23 @@ func TestCleanupStorageRetainsNinetyLocalDays(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertUsageEvents returned error: %v", err)
 	}
-	// 准备：只有 Overview 与 Activity 都追平后，旧 raw events 才具备删除安全水位。
+	// 准备：只有 Overview 与 Activity 都追平后，旧 raw events 才具备归档安全水位。
 	if err := repository.AggregateUsageOverviewStats(context.Background(), db, now); err != nil {
 		t.Fatalf("aggregate overview before cleanup: %v", err)
 	}
 	if err := repository.AggregateUsageActivityStats(context.Background(), db, now); err != nil {
 		t.Fatalf("aggregate activity before cleanup: %v", err)
 	}
+	// 测试显式推进第三个全局 checkpoint 后，才满足 raw event 归档门禁。
+	seedCaughtUpLatencyCheckpoint(t, db, now)
 
-	// 执行：在两个全局 checkpoint 已追平且没有 identity delta 时运行清理。
-	result, err := repository.CleanupStorage(db, now, repository.CleanupStorageOptions{CleanupUsageEvents: true})
+	// 执行：三个全局 checkpoint 已追平且没有 identity delta 时运行维护。
+	result, err := repository.CleanupStorage(db, now)
 	if err != nil {
 		t.Fatalf("CleanupStorage returned error: %v", err)
 	}
-	if result.UsageEventsDeleted != 1 {
-		t.Fatalf("expected one old usage event to be deleted, got %+v", result)
+	if result.UsageEventsArchived != 1 {
+		t.Fatalf("expected one old usage event to be archived, got %+v", result)
 	}
 
 	var remainingKeys []string
@@ -831,13 +841,15 @@ func TestCleanupStorageUsesLocalCalendarDaysAcrossDST(t *testing.T) {
 	if err := repository.AggregateUsageActivityStats(context.Background(), db, now); err != nil {
 		t.Fatalf("aggregate activity before cleanup: %v", err)
 	}
+	// Latency 行必须和另外两类一起覆盖当前最大 ID，raw event 才可离开 hot 表。
+	seedCaughtUpLatencyCheckpoint(t, db, now)
 
-	result, err := repository.CleanupStorage(db, now, repository.CleanupStorageOptions{CleanupUsageEvents: true})
+	result, err := repository.CleanupStorage(db, now)
 	if err != nil {
 		t.Fatalf("CleanupStorage returned error: %v", err)
 	}
-	if result.UsageEventsDeleted != 1 {
-		t.Fatalf("expected only the event before the local calendar cutoff to be deleted, got %+v", result)
+	if result.UsageEventsArchived != 1 {
+		t.Fatalf("expected only the event before the local calendar cutoff to be archived, got %+v", result)
 	}
 
 	var remainingKeys []string
@@ -862,14 +874,17 @@ func TestCleanupStorageDefersUsageEventsUntilOverviewAndActivityCatchUp(t *testi
 		t.Fatalf("InsertUsageEvents returned error: %v", err)
 	}
 
-	// 执行：全局 checkpoint 尚未创建时尝试清理 raw events。
-	result, err := repository.CleanupStorage(db, now, repository.CleanupStorageOptions{CleanupUsageEvents: true})
+	// 执行：全局 checkpoint 尚未创建时尝试归档 raw events。
+	result, err := repository.CleanupStorage(db, now)
 	if err != nil {
 		t.Fatalf("CleanupStorage returned error: %v", err)
 	}
 	// 断言：清理必须让路，避免异步聚合再也读取不到两条事件。
-	if result.UsageEventsDeleted != 0 {
+	if result.UsageEventsArchived != 0 {
 		t.Fatalf("expected pending overview/activity events to remain, got %+v", result)
+	}
+	if result.UsageEventsArchiveStatus != dto.UsageEventArchiveStatusAggregationLagging {
+		t.Fatalf("expected aggregation lagging archive status, got %+v", result)
 	}
 
 	var remainingCount int64
@@ -878,6 +893,53 @@ func TestCleanupStorageDefersUsageEventsUntilOverviewAndActivityCatchUp(t *testi
 	}
 	if remainingCount != 2 {
 		t.Fatalf("expected both pending events to remain, got %d", remainingCount)
+	}
+}
+
+func TestCleanupStorageDefersUsageEventsUntilLatencyCatchUp(t *testing.T) {
+	// Overview 和 Activity 已追平时，单独落后的 Latency cursor 仍必须保留全部 raw events。
+	db := openTestDatabase(t)
+	now := time.Date(2026, 6, 16, 9, 0, 0, 0, time.Local)
+
+	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{
+		{EventKey: "latency-aggregated-old", Model: "claude-sonnet", Timestamp: now.AddDate(0, 0, -92), TotalTokens: 1},
+		{EventKey: "latency-pending-old", Model: "claude-sonnet", Timestamp: now.AddDate(0, 0, -91), TotalTokens: 2},
+	}); err != nil {
+		t.Fatalf("InsertUsageEvents returned error: %v", err)
+	}
+	if err := repository.AggregateUsageOverviewStats(context.Background(), db, now); err != nil {
+		t.Fatalf("aggregate overview before latency cleanup gate: %v", err)
+	}
+	if err := repository.AggregateUsageActivityStats(context.Background(), db, now); err != nil {
+		t.Fatalf("aggregate activity before latency cleanup gate: %v", err)
+	}
+	var events []entities.UsageEvent
+	if err := db.Order("id asc").Find(&events).Error; err != nil {
+		t.Fatalf("load usage events: %v", err)
+	}
+	// Latency 只覆盖第一条事件，第二条仍可能需要进入 hour/day 聚合。
+	if err := db.Create(&entities.UsageAggregationCheckpoint{
+		Name:                       entities.UsageAggregationCheckpointLatency,
+		LastAggregatedUsageEventID: events[0].ID,
+		CreatedAt:                  now,
+		UpdatedAt:                  now,
+	}).Error; err != nil {
+		t.Fatalf("seed lagging latency checkpoint: %v", err)
+	}
+
+	result, err := repository.CleanupStorage(db, now)
+	if err != nil {
+		t.Fatalf("CleanupStorage returned error: %v", err)
+	}
+	if result.UsageEventsArchived != 0 {
+		t.Fatalf("expected lagging latency aggregation to retain raw events, got %+v", result)
+	}
+	var remainingCount int64
+	if err := db.Model(&entities.UsageEvent{}).Count(&remainingCount).Error; err != nil {
+		t.Fatalf("count remaining usage events: %v", err)
+	}
+	if remainingCount != 2 {
+		t.Fatalf("expected both latency events to remain, got %d", remainingCount)
 	}
 }
 
@@ -896,11 +958,14 @@ func TestCleanupStorageDefersUsageEventsUntilIdentityCatchUp(t *testing.T) {
 	if err := db.Order("id asc").Find(&events).Error; err != nil {
 		t.Fatalf("load usage events: %v", err)
 	}
-	if err := db.Create(&entities.UsageOverviewAggregationCheckpoint{Name: usageOverviewAggregationCheckpoint, LastAggregatedUsageEventID: events[1].ID, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
-		t.Fatalf("seed overview checkpoint: %v", err)
+	// 三个全局水位均追平，确保本用例只由 Identity delta 阻止清理。
+	checkpoints := []entities.UsageAggregationCheckpoint{
+		{Name: entities.UsageAggregationCheckpointOverview, LastAggregatedUsageEventID: events[1].ID, CreatedAt: now, UpdatedAt: now},
+		{Name: entities.UsageAggregationCheckpointActivity, LastAggregatedUsageEventID: events[1].ID, CreatedAt: now, UpdatedAt: now},
+		{Name: entities.UsageAggregationCheckpointLatency, LastAggregatedUsageEventID: events[1].ID, CreatedAt: now, UpdatedAt: now},
 	}
-	if err := db.Create(&entities.UsageActivityAggregationCheckpoint{Name: "activity", LastAggregatedUsageEventID: events[1].ID, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
-		t.Fatalf("seed activity checkpoint: %v", err)
+	if err := db.Create(&checkpoints).Error; err != nil {
+		t.Fatalf("seed global aggregation checkpoints: %v", err)
 	}
 	if err := db.Create(&entities.UsageIdentity{
 		Name:                       "Auth 1",
@@ -914,12 +979,12 @@ func TestCleanupStorageDefersUsageEventsUntilIdentityCatchUp(t *testing.T) {
 	}
 
 	// 执行：identity cursor 尚未越过第二条匹配事件时运行清理。
-	result, err := repository.CleanupStorage(db, now, repository.CleanupStorageOptions{CleanupUsageEvents: true})
+	result, err := repository.CleanupStorage(db, now)
 	if err != nil {
 		t.Fatalf("CleanupStorage returned error: %v", err)
 	}
 	// 断言：两条 raw events 都必须保留，等待 Identity 下一批安全累计。
-	if result.UsageEventsDeleted != 0 {
+	if result.UsageEventsArchived != 0 {
 		t.Fatalf("expected pending identity events to remain, got %+v", result)
 	}
 
@@ -929,6 +994,25 @@ func TestCleanupStorageDefersUsageEventsUntilIdentityCatchUp(t *testing.T) {
 	}
 	if remainingCount != 2 {
 		t.Fatalf("expected identity events to remain, got %d", remainingCount)
+	}
+}
+
+func seedCaughtUpLatencyCheckpoint(t *testing.T, db *gorm.DB, now time.Time) {
+	// Task 1 的 cleanup 测试需要手工表达“未来 Latency 已回填完成”，Task 2 会改由真实聚合推进。
+	t.Helper()
+	var maxEventID int64
+	if err := db.Model(&entities.UsageEvent{}).Select("COALESCE(MAX(id), 0)").Scan(&maxEventID).Error; err != nil {
+		t.Fatalf("load max event ID for latency checkpoint: %v", err)
+	}
+	checkpoint := entities.UsageAggregationCheckpoint{
+		Name:                       entities.UsageAggregationCheckpointLatency,
+		LastAggregatedUsageEventID: maxEventID,
+		StatsUpdatedAt:             &now,
+		CreatedAt:                  now,
+		UpdatedAt:                  now,
+	}
+	if err := db.Create(&checkpoint).Error; err != nil {
+		t.Fatalf("seed caught-up latency checkpoint: %v", err)
 	}
 }
 

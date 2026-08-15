@@ -515,6 +515,7 @@ function RealtimeCard({
 }) {
   const cardClassName = [
     styles.overviewRealtimeCard,
+    'keeper-card-surface',
     full ? styles.overviewRealtimeCardFull : '',
     compact ? styles.overviewRealtimeCardCompact : '',
     className ?? '',
@@ -522,7 +523,9 @@ function RealtimeCard({
   return (
     <section className={cardClassName}>
       <div className={styles.overviewRealtimeCardHeader}>
-        <h3 className={styles.overviewRealtimeCardTitle}>{title}</h3>
+        <div className="keeper-card-title-track">
+          <h3 className="keeper-card-title">{title}</h3>
+        </div>
         {metrics && metrics.length > 0 && (
           <div className={styles.overviewRealtimeMetrics}>
             {metrics.map((metric) => (

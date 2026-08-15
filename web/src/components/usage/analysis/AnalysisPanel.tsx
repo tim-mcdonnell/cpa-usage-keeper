@@ -4,7 +4,7 @@ import '@/lib/chartjs';
 import { Interaction, Tooltip } from 'chart.js';
 import type { Chart, ChartData, ChartOptions, InteractionItem, InteractionModeFunction, Plugin, ScriptableContext, TooltipModel, TooltipPositionerFunction } from 'chart.js';
 import { Bar, Doughnut, Scatter } from 'react-chartjs-2';
-import type { AnalysisCompositionItem, AnalysisCostBreakdown, AnalysisHeatmapCell, AnalysisLatencyDiagnostics, AnalysisModelEfficiencyItem, AnalysisResponse, AnalysisTokenUsageBucket } from '@/lib/types';
+import type { AnalysisCompositionItem, AnalysisCostBreakdown, AnalysisHeatmapCell, AnalysisLatencyDiagnostics, AnalysisModelEfficiencyItem, AnalysisModelUsagePayload, AnalysisResponse, AnalysisTokenUsageBucket } from '@/lib/types';
 import { calculateDisplayInputTokens, calculateDisplayOutputTokens, formatCompactNumber, formatDurationMs, formatPerMinuteValue, formatUsd } from '@/utils/usage';
 import styles from './AnalysisPanel.module.scss';
 
@@ -47,6 +47,22 @@ type ChartTheme = {
 type LegendItem = {
   label: string;
   color: string;
+};
+
+type TopModelViewSeries = {
+  key: string;
+  model: string;
+  totalTokens: number[];
+  total: number;
+  share: number;
+  color: GradientColor;
+};
+
+type TopModelsViewModel = {
+  labels: string[];
+  series: TopModelViewSeries[];
+  bucketTotals: number[];
+  rangeTotal: number;
 };
 
 type GradientColor = {
@@ -142,6 +158,18 @@ const CHART_COLORS: GradientColor[] = [
   { base: '#b91c1c', light: '#ef4444' },
   { base: '#0891b2', light: '#67e8f9' },
 ];
+const TOP_MODEL_COLORS: GradientColor[] = [
+  { base: '#db2777', light: '#f9a8d4' },
+  { base: '#d97706', light: '#fcd34d' },
+  { base: '#059669', light: '#6ee7b7' },
+  { base: '#2563eb', light: '#93c5fd' },
+  { base: '#dc2626', light: '#fca5a5' },
+];
+const TOP_MODELS_OTHERS_COLOR: GradientColor = { base: '#64748b', light: '#cbd5e1' };
+const TOP_MODELS_LIMIT = 5;
+const TOP_MODELS_MIN_SEGMENT_PX = 4;
+const TOP_MODELS_SCALE_HEADROOM_RATIO = 1.12;
+const TOP_MODELS_OTHERS_KEY = '__analysis_top_models_others__';
 const TOKEN_COLORS = {
   input: { base: '#2563eb', light: '#93c5fd' },
   output: { base: '#16a34a', light: '#86efac' },
@@ -453,6 +481,23 @@ const getChartTheme = (isDark: boolean): ChartTheme => ({
   tooltipBody: isDark ? 'rgba(255, 255, 255, 0.86)' : '#374151',
 });
 
+const buildAnalysisBarTooltipStyle = (chartTheme: ChartTheme) => ({
+  backgroundColor: chartTheme.tooltipBg,
+  titleColor: chartTheme.textPrimary,
+  bodyColor: chartTheme.tooltipBody,
+  footerColor: chartTheme.tooltipBody,
+  borderColor: chartTheme.tooltipBorder,
+  borderWidth: 1,
+  padding: 10,
+  titleSpacing: 2,
+  titleMarginBottom: 6,
+  bodySpacing: 2,
+  footerSpacing: 2,
+  footerMarginTop: 6,
+  displayColors: true,
+  usePointStyle: true,
+});
+
 const getLatencyColors = (isDark: boolean): LatencyThemeColors => (isDark ? LATENCY_COLORS.dark : LATENCY_COLORS.light);
 
 const getLatencyDiagnosticsPluginOptions = (chart: Chart<'scatter'>): LatencyDiagnosticsPluginOptions | undefined => {
@@ -760,6 +805,173 @@ const formatBucketLabel = (bucket: string, granularity: AnalysisResponse['granul
   return `${String(date.getHours()).padStart(2, '0')}:00`;
 };
 
+const compareModelNames = (left: string, right: string) => {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+};
+
+function buildTopModelsViewModel(
+  modelUsage: AnalysisModelUsagePayload | undefined,
+  granularity: AnalysisResponse['granularity'],
+  timezone: string | undefined,
+  othersLabel: string,
+): TopModelsViewModel {
+  const buckets = modelUsage?.buckets ?? [];
+  const valuesByModel = new Map<string, number[]>();
+  for (const source of modelUsage?.series ?? []) {
+    const model = String(source.model ?? '').trim();
+    if (!model) continue;
+    const values = valuesByModel.get(model) ?? Array.from({ length: buckets.length }, () => 0);
+    for (let index = 0; index < buckets.length; index += 1) {
+      values[index] += Math.max(0, toNumber(source.total_tokens?.[index]));
+    }
+    valuesByModel.set(model, values);
+  }
+
+  const ranked = Array.from(valuesByModel, ([model, totalTokens]) => ({
+    key: model,
+    model,
+    totalTokens,
+    total: totalTokens.reduce((sum, value) => sum + value, 0),
+  }))
+    .filter((item) => item.total > 0)
+    .sort((left, right) => right.total - left.total || compareModelNames(left.model, right.model));
+  const rangeTotal = ranked.reduce((sum, item) => sum + item.total, 0);
+  const major = ranked.slice(0, TOP_MODELS_LIMIT).map((item, index) => ({
+    ...item,
+    share: rangeTotal > 0 ? (item.total / rangeTotal) * 100 : 0,
+    color: TOP_MODEL_COLORS[index % TOP_MODEL_COLORS.length],
+  }));
+  const rest = ranked.slice(TOP_MODELS_LIMIT);
+  if (rest.length > 0) {
+    const totalTokens = Array.from({ length: buckets.length }, (_, index) =>
+      rest.reduce((sum, item) => sum + item.totalTokens[index], 0));
+    const total = totalTokens.reduce((sum, value) => sum + value, 0);
+    major.push({
+      key: TOP_MODELS_OTHERS_KEY,
+      model: othersLabel,
+      totalTokens,
+      total,
+      share: rangeTotal > 0 ? (total / rangeTotal) * 100 : 0,
+      color: TOP_MODELS_OTHERS_COLOR,
+    });
+  }
+
+  return {
+    labels: buckets.map((bucket) => formatBucketLabel(bucket, granularity, timezone)),
+    series: major,
+    bucketTotals: Array.from({ length: buckets.length }, (_, index) =>
+      ranked.reduce((sum, item) => sum + item.totalTokens[index], 0)),
+    rangeTotal,
+  };
+}
+
+const getTopModelDatasetColor = (item: TopModelViewSeries, highlightedModel: string | null): GradientColor => {
+  if (!highlightedModel || highlightedModel === item.key) return item.color;
+  return { base: `${item.color.base}33`, light: `${item.color.light}33` };
+};
+
+function buildTopModelsChartData(view: TopModelsViewModel, highlightedModel: string | null): ChartData<'bar', Array<number | null>, string> {
+  return {
+    labels: view.labels,
+    datasets: view.series.map((item) => ({
+      label: item.model,
+      // 非零小量级只增加像素可见下限；零值保持跳过，坐标轴和 tooltip 仍使用真实 Token。
+      data: item.totalTokens.map((value) => value > 0 ? value : null),
+      backgroundColor: (context) => toGradientFill(context, getTopModelDatasetColor(item, highlightedModel)),
+      hoverBackgroundColor: (context) => toGradientFill(context, getTopModelDatasetColor(item, highlightedModel)),
+      borderColor: item.color.base,
+      borderWidth: highlightedModel === item.key ? 1.5 : 0,
+      borderSkipped: false,
+      borderRadius: 2,
+      minBarLength: TOP_MODELS_MIN_SEGMENT_PX,
+      stack: 'models',
+      yAxisID: 'tokens',
+      barPercentage: 0.82,
+      categoryPercentage: 0.78,
+      maxBarThickness: 38,
+    })),
+  };
+}
+
+const buildAnalysisTimeXAxis = (chartTheme: ChartTheme, isMobile: boolean) => ({
+  stacked: true,
+  grid: { color: chartTheme.grid, drawTicks: false },
+  border: { color: chartTheme.axis },
+  ticks: {
+    color: chartTheme.textSecondary,
+    font: { size: 10 },
+    maxRotation: isMobile ? 0 : 45,
+    autoSkip: true,
+    maxTicksLimit: isMobile ? 8 : 12,
+  },
+});
+
+function buildTopModelsChartOptions({
+  chartTheme,
+  isMobile,
+  bucketTotals,
+  totalLabel,
+}: {
+  chartTheme: ChartTheme;
+  isMobile: boolean;
+  bucketTotals: number[];
+  totalLabel: string;
+}): ChartOptions<'bar'> {
+  const maxBucketTotal = bucketTotals.reduce((maximum, value) => Math.max(maximum, toNumber(value)), 0);
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        ...buildAnalysisBarTooltipStyle(chartTheme),
+        filter: (context) => toNumber(context.parsed.y) > 0,
+        // 图表维持全范围稳定色序；tooltip 单独按当前 bucket 用量降序，便于直接比较。
+        itemSort: (left, right) => (
+          toNumber(right.parsed.y) - toNumber(left.parsed.y)
+          || left.datasetIndex - right.datasetIndex
+        ),
+        callbacks: {
+          label: (context) => {
+            const value = toNumber(context.parsed.y);
+            const bucketTotal = toNumber(bucketTotals[context.dataIndex]);
+            const share = bucketTotal > 0 ? (value / bucketTotal) * 100 : 0;
+            return `${getDatasetLabelPrefix(context.dataset)}${formatCompactNumber(value)} (${formatPercent(share)})`;
+          },
+          footer: (items) => {
+            const dataIndex = items[0]?.dataIndex ?? -1;
+            if (dataIndex < 0) return '';
+            return `${totalLabel}: ${formatCompactNumber(toNumber(bucketTotals[dataIndex]))}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: buildAnalysisTimeXAxis(chartTheme, isMobile),
+      tokens: {
+        type: 'linear',
+        position: 'left',
+        stacked: true,
+        beginAtZero: true,
+        // minBarLength 会扩张极小分段；预留顶部空间，避免扩张后的堆叠段被 chart-area 裁剪。
+        bounds: 'data',
+        suggestedMax: maxBucketTotal > 0 ? maxBucketTotal * TOP_MODELS_SCALE_HEADROOM_RATIO : undefined,
+        grid: { color: chartTheme.grid },
+        border: { color: chartTheme.axis },
+        ticks: {
+          color: chartTheme.textSecondary,
+          font: { size: 10 },
+          maxTicksLimit: 5,
+          callback: (value) => formatCompactNumber(Number(value)),
+        },
+      },
+    },
+  };
+}
+
 function buildTokenUsageRows(buckets: AnalysisTokenUsageBucket[], granularity: AnalysisResponse['granularity'], timezone?: string): ChartRow[] {
   return buckets.map((bucket) => ({
     label: formatBucketLabel(bucket.bucket, granularity, timezone),
@@ -854,15 +1066,7 @@ function buildAnalysisTokenChartOptions({ chartTheme, isMobile, totalTokens, tot
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: chartTheme.tooltipBg,
-        titleColor: chartTheme.textPrimary,
-        bodyColor: chartTheme.tooltipBody,
-        footerColor: chartTheme.tooltipBody,
-        borderColor: chartTheme.tooltipBorder,
-        borderWidth: 1,
-        padding: 10,
-        displayColors: true,
-        usePointStyle: true,
+        ...buildAnalysisBarTooltipStyle(chartTheme),
         callbacks: {
           label: (context) => {
             const label = getDatasetLabelPrefix(context.dataset);
@@ -885,12 +1089,7 @@ function buildAnalysisTokenChartOptions({ chartTheme, isMobile, totalTokens, tot
       },
     },
     scales: {
-      x: {
-        stacked: true,
-        grid: { color: chartTheme.grid, drawTicks: false },
-        border: { color: chartTheme.axis },
-        ticks: { color: chartTheme.textSecondary, font: { size: 10 }, maxRotation: isMobile ? 0 : 45, autoSkip: true, maxTicksLimit: isMobile ? 8 : 12 },
-      },
+      x: buildAnalysisTimeXAxis(chartTheme, isMobile),
       tokens: {
         type: 'linear',
         position: 'left',
@@ -967,12 +1166,12 @@ function CostHeaderHint({ show, label }: { show: boolean; label: string }) {
 
 function AnalysisCardHeader({ title, subtitle, showPricingHint, hint }: { title: string; subtitle: string; showPricingHint: boolean; hint: string }) {
   return (
-    <div className={styles.cardHeader}>
-      <div className={styles.cardTitleLine}>
-        <h2>{title}</h2>
+    <div className={`${styles.cardHeader} keeper-card-heading`}>
+      <div className={`${styles.cardTitleLine} keeper-card-title-track`}>
+        <h2 className="keeper-card-title">{title}</h2>
         <CostHeaderHint show={showPricingHint} label={hint} />
       </div>
-      <p>{subtitle}</p>
+      <p className="keeper-card-subtitle">{subtitle}</p>
     </div>
   );
 }
@@ -1085,7 +1284,7 @@ function TokenUsageChart({ rows, loading, isDark, isMobile }: { rows: ChartRow[]
   const legendItems = useMemo(() => buildTokenLegendItems(tokenLabels, averageTokenTotal, chartTheme.averageLine), [averageTokenTotal, chartTheme.averageLine, tokenLabels]);
   const hasUnavailableCost = rows.some((row) => !row.costAvailable);
   return (
-    <section className={`${styles.analysisCard} ${styles.tokenUsageCard}`}>
+    <section className={`${styles.analysisCard} ${styles.tokenUsageCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_token_usage_title')}
         subtitle={t('usage_stats.analysis_token_usage_subtitle')}
@@ -1109,6 +1308,100 @@ function TokenUsageChart({ rows, loading, isDark, isMobile }: { rows: ChartRow[]
           <div className={styles.tokenChartFrame}>
             <Bar data={chartData} options={chartOptions} plugins={[drawRequestsLineOnTopPlugin, drawTokenAverageLinePlugin]} />
           </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TopModelsCard({
+  modelUsage,
+  granularity,
+  timezone,
+  loading,
+  isDark,
+  isMobile,
+}: {
+  modelUsage: AnalysisModelUsagePayload | undefined;
+  granularity: AnalysisResponse['granularity'];
+  timezone: string | undefined;
+  loading: boolean;
+  isDark: boolean;
+  isMobile: boolean;
+}) {
+  const { t } = useTranslation();
+  const [hoveredModel, setHoveredModel] = useState<string | null>(null);
+  const [focusedModel, setFocusedModel] = useState<string | null>(null);
+  const chartTheme = useMemo(() => getChartTheme(isDark), [isDark]);
+  const view = useMemo(
+    () => buildTopModelsViewModel(modelUsage, granularity, timezone, t('usage_stats.analysis_others')),
+    [granularity, modelUsage, t, timezone],
+  );
+  const highlightedModel = focusedModel ?? hoveredModel;
+  const activeHighlightedModel = view.series.some((item) => item.key === highlightedModel)
+    ? highlightedModel
+    : null;
+  const chartData = useMemo(
+    () => buildTopModelsChartData(view, activeHighlightedModel),
+    [activeHighlightedModel, view],
+  );
+  const chartOptions = useMemo(() => buildTopModelsChartOptions({
+    chartTheme,
+    isMobile,
+    bucketTotals: view.bucketTotals,
+    totalLabel: t('usage_stats.total_tokens'),
+  }), [chartTheme, isMobile, t, view.bucketTotals]);
+
+  return (
+    <section className={`${styles.analysisCard} ${styles.topModelsCard} keeper-card-surface`}>
+      <AnalysisCardHeader
+        title={t('usage_stats.analysis_top_models_title')}
+        subtitle={t('usage_stats.analysis_top_models_subtitle')}
+        showPricingHint={false}
+        hint=""
+      />
+      {loading ? (
+        <div className={styles.emptyState}>{t('common.loading')}</div>
+      ) : view.series.length === 0 ? (
+        <div className={styles.emptyState}>{t('usage_stats.no_data')}</div>
+      ) : (
+        <div className={styles.topModelsBody}>
+          <div className={styles.analysisChartSurface}>
+            <div
+              className={styles.topModelsChartFrame}
+              role="img"
+              aria-label={`${t('usage_stats.analysis_top_models_chart_aria')}: ${formatCompactNumber(view.rangeTotal)}`}
+            >
+              <Bar data={chartData} options={chartOptions} />
+            </div>
+          </div>
+          <ol className={styles.topModelsRanking} aria-label={t('usage_stats.analysis_top_models_ranking_aria')}>
+            {view.series.map((item, index) => {
+              const muted = Boolean(activeHighlightedModel && activeHighlightedModel !== item.key);
+              const ariaLabel = `${index + 1}. ${item.model}, ${t('usage_stats.total_tokens')}: ${formatCompactNumber(item.total)}, ${t('usage_stats.analysis_top_models_share')}: ${formatPercent(item.share)}`;
+              return (
+                <li key={item.key}>
+                  <button
+                    type="button"
+                    className={styles.topModelsRankItem}
+                    style={{ '--top-model-color': item.color.base } as CSSProperties}
+                    data-muted={muted}
+                    aria-label={ariaLabel}
+                    onMouseEnter={() => setHoveredModel(item.key)}
+                    onMouseLeave={() => setHoveredModel(null)}
+                    onFocus={() => setFocusedModel(item.key)}
+                    onBlur={() => setFocusedModel(null)}
+                  >
+                    <span className={styles.topModelsRank}>{index + 1}</span>
+                    <span className={styles.topModelsColor} aria-hidden="true" />
+                    <span className={styles.topModelsName} title={item.model}>{item.model}</span>
+                    <strong className={styles.topModelsTokens}>{formatCompactNumber(item.total)}</strong>
+                    <span className={styles.topModelsShare}>{formatPercent(item.share)}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
         </div>
       )}
     </section>
@@ -1275,7 +1568,7 @@ function LatencyDiagnosticsCard({ diagnostics, loading, error, isDark, isMobile 
   const unsupported = safeDiagnostics.supported === false;
   const hasData = toNumber(safeDiagnostics.total_points) > 0 && safeDiagnostics.points.length > 0;
   return (
-    <section className={`${styles.analysisCard} ${styles.latencyDiagnosticsCard}`}>
+    <section className={`${styles.analysisCard} ${styles.latencyDiagnosticsCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_latency_title')}
         subtitle={t('usage_stats.analysis_latency_subtitle')}
@@ -1352,7 +1645,7 @@ function CompositionPanel({ tabs, loading, isDark, windowMinutes }: { tabs: Comp
   const chartOptions = useMemo(() => buildCompositionChartOptions(chartTheme, tooltipLabels), [chartTheme, tooltipLabels]);
   const hasUnavailableCost = items.some((item) => item.cost_available === false);
   return (
-    <section className={`${styles.analysisCard} ${styles.compositionCard}`}>
+    <section className={`${styles.analysisCard} ${styles.compositionCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_composition_title')}
         subtitle={t('usage_stats.analysis_composition_subtitle')}
@@ -1480,7 +1773,7 @@ function CostBreakdownCard({ breakdown, rows, loading }: { breakdown: AnalysisCo
   };
   const hideCostTooltip = () => setCostTooltip(null);
   return (
-    <section className={`${styles.analysisCard} ${styles.costBreakdownCard}`}>
+    <section className={`${styles.analysisCard} ${styles.costBreakdownCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_cost_breakdown_title')}
         subtitle={t('usage_stats.analysis_cost_breakdown_subtitle')}
@@ -1840,7 +2133,7 @@ function ModelEfficiencyCard({ rows, loading, isDark, isMobile }: { rows: Analys
   const hasPricedData = pricedRows.length > 0;
   const hasUnavailableCost = rows.some((row) => row.cost_available === false);
   return (
-    <section className={`${styles.analysisCard} ${styles.modelEfficiencyCard}`}>
+    <section className={`${styles.analysisCard} ${styles.modelEfficiencyCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_model_efficiency_title')}
         subtitle={t('usage_stats.analysis_model_efficiency_subtitle')}
@@ -1936,7 +2229,7 @@ function Heatmap({ cells, apiKeys, apiKeyLabels, models, loading, isDark }: { ce
   };
   const hideTooltip = () => setTooltip(null);
   return (
-    <section className={`${styles.analysisCard} ${styles.heatmapCard} ${isDark ? styles.heatmapCardDark : styles.heatmapCardLight}`}>
+    <section className={`${styles.analysisCard} ${styles.heatmapCard} keeper-card-surface ${isDark ? styles.heatmapCardDark : styles.heatmapCardLight}`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_heatmap_title')}
         subtitle={t('usage_stats.analysis_heatmap_subtitle')}
@@ -2117,6 +2410,14 @@ export function AnalysisPanel({ analysis, loading, latencyDiagnostics, latencyLo
         <CostBreakdownCard breakdown={analysis?.cost_breakdown} rows={tokenRows} loading={loading} />
         <ModelEfficiencyCard rows={analysis?.model_efficiency ?? []} loading={loading} isDark={isDark} isMobile={isMobile} />
       </div>
+      <TopModelsCard
+        modelUsage={analysis?.model_usage}
+        granularity={analysis?.granularity ?? 'hourly'}
+        timezone={analysis?.timezone}
+        loading={loading}
+        isDark={isDark}
+        isMobile={isMobile}
+      />
       <LatencyDiagnosticsCard diagnostics={latencyDiagnostics} loading={latencyLoading} error={latencyError} isDark={isDark} isMobile={isMobile} />
       <CompositionPanel tabs={compositionTabs} loading={loading} isDark={isDark} windowMinutes={analysisWindowMinutes} />
       <Heatmap cells={analysis?.heatmap?.cells ?? []} apiKeys={analysis?.heatmap?.api_keys ?? []} apiKeyLabels={analysis?.heatmap?.api_key_labels ?? {}} models={analysis?.heatmap?.models ?? []} loading={loading} isDark={isDark} />
