@@ -92,6 +92,39 @@ func TestBootstrapAndPermutationAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestResidualCoverageBootstrapAndPermutationAreDeterministic(t *testing.T) {
+	t.Parallel()
+	observations := linearSeries(14, 100, 10, 5)
+	for index := 7; index < len(observations); index++ {
+		percent := *observations[index].UsedPercent + 12
+		observations[index].UsedPercent = &percent
+	}
+	first := defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour))
+	permuted := append([]entities.QuotaObservation(nil), observations...)
+	rand.New(rand.NewSource(91)).Shuffle(len(permuted), func(left int, right int) {
+		permuted[left], permuted[right] = permuted[right], permuted[left]
+	})
+	second := defaultEstimator().EstimateWindows(permuted, testBaseTime.Add(time.Hour))
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal first residual estimate: %v", err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal second residual estimate: %v", err)
+	}
+	if string(firstJSON) != string(secondJSON) {
+		t.Fatalf("permuted residual input changed output\nfirst:  %s\nsecond: %s", firstJSON, secondJSON)
+	}
+	result := requireSingleEstimate(t, first)
+	if !slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+		t.Fatalf("residual deterministic flags = %v, want coverage_gap", result.Flags)
+	}
+	if result.TokensCI95 == nil || result.TokensCI95.High == nil {
+		t.Fatalf("residual deterministic estimate has no finite bootstrap interval: %+v", result.TokensCI95)
+	}
+}
+
 func TestUnstableBootstrapAndSplitHalfStayLow(t *testing.T) {
 	t.Parallel()
 	observations := linearSeries(12, 100, 5, 4)
@@ -201,6 +234,26 @@ func TestStudentizedOutlierIsClassifiedAndExcludedWithoutSeriesBreak(t *testing.
 	if result.TokensAt100 == nil || cleanResult.TokensAt100 == nil ||
 		*result.TokensAt100 != *cleanResult.TokensAt100 {
 		t.Fatalf("outlier exclusion changed fitted capacity: clean=%v outlier=%v", cleanResult.TokensAt100, result.TokensAt100)
+	}
+}
+
+func TestResidualCoverageDoesNotFlagNormalModelNoise(t *testing.T) {
+	t.Parallel()
+	observations := percentSeries(
+		[]float64{10, 15, 21, 25, 30, 36, 40, 45, 51, 55, 60, 66},
+		100,
+	)
+	result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+	if slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+		t.Fatalf("bounded model noise was classified as coverage loss: %+v", result)
+	}
+	for _, point := range result.Points {
+		if point.Class == estimate.PointCoverageGapInterval {
+			t.Fatalf("bounded model-noise point was classified as coverage gap: %+v", point)
+		}
+	}
+	if result.TokensAt100 == nil || result.Confidence == estimate.ConfidenceInsufficient {
+		t.Fatalf("bounded model noise lost its estimate: %+v", result)
 	}
 }
 

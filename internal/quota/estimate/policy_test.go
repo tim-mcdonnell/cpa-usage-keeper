@@ -48,6 +48,261 @@ func TestCoverageGapIsAdjustedClassifiedAndLowConfidence(t *testing.T) {
 	}
 }
 
+func TestResidualCoverageGapIsDetectedThroughEstimatorInterface(t *testing.T) {
+	t.Parallel()
+	clean := linearSeries(12, 100, 10, 5)
+	contaminated := linearSeries(12, 100, 10, 5)
+	const bypassPercent = 12.0
+	const bypassIndex = 6
+	for index := bypassIndex; index < len(contaminated); index++ {
+		percent := *contaminated[index].UsedPercent + bypassPercent
+		contaminated[index].UsedPercent = &percent
+	}
+
+	cleanResult := requireSingleEstimate(t, defaultEstimator().EstimateWindows(clean, testBaseTime.Add(time.Hour)))
+	result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(contaminated, testBaseTime.Add(time.Hour)))
+	if !slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+		t.Fatalf("nonzero-spend bypass flags = %v, want coverage_gap", result.Flags)
+	}
+	diagnostic := diagnosticByID(t, result, contaminated[bypassIndex].ID)
+	if diagnostic.Class != estimate.PointCoverageGapInterval {
+		t.Fatalf("nonzero-spend bypass diagnostic = %+v, want coverage_gap_interval", diagnostic)
+	}
+	if diagnostic.CumulativePercentOffset != bypassPercent {
+		t.Fatalf("nonzero-spend bypass offset = %v, want %v", diagnostic.CumulativePercentOffset, bypassPercent)
+	}
+	if result.TokensAt100 == nil || cleanResult.TokensAt100 == nil ||
+		*result.TokensAt100 != *cleanResult.TokensAt100 {
+		t.Fatalf("residual refinement did not recover clean fit: clean=%v contaminated=%v", cleanResult.TokensAt100, result.TokensAt100)
+	}
+	if result.Confidence != estimate.ConfidenceLow {
+		t.Fatalf("residual coverage confidence = %q, want low", result.Confidence)
+	}
+}
+
+func TestResidualCoverageBaselineExcludesEverySuspectIntervalBeforeRefit(t *testing.T) {
+	t.Parallel()
+	clean := linearSeries(16, 100, 10, 5)
+	contaminated := linearSeries(16, 100, 10, 5)
+	for index := 5; index < len(contaminated); index++ {
+		percent := *contaminated[index].UsedPercent + 12
+		contaminated[index].UsedPercent = &percent
+	}
+	for index := 10; index < len(contaminated); index++ {
+		percent := *contaminated[index].UsedPercent + 14
+		contaminated[index].UsedPercent = &percent
+	}
+
+	cleanResult := requireSingleEstimate(t, defaultEstimator().EstimateWindows(clean, testBaseTime.Add(time.Hour)))
+	result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(contaminated, testBaseTime.Add(time.Hour)))
+	if result.TokensAt100 == nil || cleanResult.TokensAt100 == nil ||
+		*result.TokensAt100 != *cleanResult.TokensAt100 {
+		t.Fatalf("multiple-suspect refit changed capacity: clean=%v contaminated=%v", cleanResult.TokensAt100, result.TokensAt100)
+	}
+	first := diagnosticByID(t, result, contaminated[5].ID)
+	second := diagnosticByID(t, result, contaminated[10].ID)
+	if first.Class != estimate.PointCoverageGapInterval ||
+		first.CumulativePercentOffset != 12 ||
+		second.Class != estimate.PointCoverageGapInterval ||
+		second.CumulativePercentOffset != 26 {
+		t.Fatalf("multiple-suspect diagnostics = first:%+v second:%+v", first, second)
+	}
+	for _, fitted := range result.FittedSeries {
+		if fitted.ObservationID == contaminated[5].ID ||
+			fitted.ObservationID == contaminated[10].ID {
+			t.Fatalf("suspect interval remained in final fit: %+v", fitted)
+		}
+	}
+}
+
+func TestResidualCoverageLeavesUpwardTransientToOutlierPolicy(t *testing.T) {
+	t.Parallel()
+	observations := linearSeries(20, 100, 10, 4)
+	const outlierIndex = 10
+	percent := *observations[outlierIndex].UsedPercent + 6
+	observations[outlierIndex].UsedPercent = &percent
+
+	result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+	if slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+		t.Fatalf("upward transient flags = %v, do not want coverage_gap", result.Flags)
+	}
+	if diagnosticByID(t, result, observations[outlierIndex].ID).Class != estimate.PointOutlier {
+		t.Fatalf(
+			"upward transient diagnostic = %+v, want outlier",
+			diagnosticByID(t, result, observations[outlierIndex].ID),
+		)
+	}
+}
+
+func TestResidualCoverageLeavesCoherentMixSlopeToMixPolicy(t *testing.T) {
+	t.Parallel()
+	observations := percentSeries(
+		[]float64{10, 15, 20, 25, 30, 35, 40, 45, 55, 65, 75, 85},
+		100,
+	)
+	var input int64
+	var output int64
+	for index := range observations {
+		if index < 8 {
+			input += 100
+		} else {
+			output += 100
+		}
+		tokens := int64(index+1) * 100
+		setComposition(&observations[index], tokens, input, output, 0, 0)
+	}
+
+	result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+	if slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+		t.Fatalf("coherent mix slope flags = %v, do not want coverage_gap", result.Flags)
+	}
+	if !slices.Contains(result.Flags, estimate.FlagMixShift) {
+		t.Fatalf("coherent mix slope flags = %v, want mix_shift", result.Flags)
+	}
+	for _, point := range result.Points {
+		if point.Class == estimate.PointCoverageGapInterval {
+			t.Fatalf("coherent mix slope received coverage classification: %+v", result.Points)
+		}
+	}
+}
+
+func TestResidualCoverageComposesWithPricingMixAndResetPolicy(t *testing.T) {
+	t.Parallel()
+	t.Run("pricing and residual coverage", func(t *testing.T) {
+		observations := linearSeries(14, 100, 10, 5)
+		for index := 6; index < len(observations); index++ {
+			percent := *observations[index].UsedPercent + 12
+			observations[index].UsedPercent = &percent
+		}
+		for index := 7; index < len(observations); index++ {
+			observations[index].PricingSnapshotHash = "pricing-b"
+			cost := float64(*observations[index].AttributedTokens) / 500
+			observations[index].AttributedCostUSD = &cost
+		}
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if !slices.Contains(result.Flags, estimate.FlagCoverageGap) ||
+			!slices.Contains(result.Flags, estimate.FlagPricingChanged) {
+			t.Fatalf("composed flags = %v, want coverage_gap and pricing_changed", result.Flags)
+		}
+		if result.TokensAt100 == nil || *result.TokensAt100 != 1800 {
+			t.Fatalf("composed token fit = %v, want 1800", pointerValue(result.TokensAt100))
+		}
+		if result.CostSegment == nil || result.CostSegment.PricingSnapshotHash != "pricing-b" {
+			t.Fatalf("composed cost segment = %+v, want pricing-b", result.CostSegment)
+		}
+	})
+
+	t.Run("mix and residual coverage", func(t *testing.T) {
+		observations := linearSeries(14, 100, 10, 5)
+		var input int64
+		var output int64
+		for index := range observations {
+			if index < 7 {
+				input += 100
+			} else {
+				output += 100
+			}
+			tokens := int64(index) * 100
+			setComposition(&observations[index], tokens, input, output, 0, 0)
+		}
+		for index := 6; index < len(observations); index++ {
+			percent := *observations[index].UsedPercent + 12
+			observations[index].UsedPercent = &percent
+		}
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if !slices.Contains(result.Flags, estimate.FlagCoverageGap) ||
+			!slices.Contains(result.Flags, estimate.FlagMixShift) {
+			t.Fatalf("composed flags = %v, want coverage_gap and mix_shift", result.Flags)
+		}
+		if result.Confidence != estimate.ConfidenceLow {
+			t.Fatalf("composed confidence = %q, want low", result.Confidence)
+		}
+	})
+
+	t.Run("reset epochs remain isolated", func(t *testing.T) {
+		first := linearSeries(12, 100, 10, 5)
+		for index := 6; index < len(first); index++ {
+			percent := *first[index].UsedPercent + 12
+			first[index].UsedPercent = &percent
+		}
+		second := linearSeries(12, 100, 10, 5)
+		nextReset := testBaseTime.Add(10 * time.Hour)
+		nextResetRaw := nextReset.Format(time.RFC3339Nano)
+		for index := range second {
+			second[index].ID += 100
+			second[index].ObservedAt = second[index].ObservedAt.Add(5 * time.Hour)
+			second[index].ResetAt = timePointer(nextReset)
+			second[index].ResetRaw = &nextResetRaw
+		}
+		results := defaultEstimator().EstimateWindows(append(first, second...), testBaseTime.Add(6*time.Hour))
+		if len(results) != 2 {
+			t.Fatalf("composed epoch count = %d, want 2", len(results))
+		}
+		if slices.Contains(results[0].Flags, estimate.FlagCoverageGap) {
+			t.Fatalf("clean reset epoch inherited coverage flag: %+v", results[0])
+		}
+		if !slices.Contains(results[1].Flags, estimate.FlagCoverageGap) {
+			t.Fatalf("contaminated reset epoch lost coverage flag: %+v", results[1])
+		}
+	})
+}
+
+func TestCoverageNullZeroAndDegenerateInputsRemainDistinct(t *testing.T) {
+	t.Parallel()
+	t.Run("null attribution is not zero coverage", func(t *testing.T) {
+		observations := linearSeries(12, 100, 10, 5)
+		observations[6].AttributedTokens = nil
+		observations[6].AttributedInputTokens = nil
+		observations[6].AttributedOutputTokens = nil
+		observations[6].AttributedCacheReadTokens = nil
+		observations[6].AttributedCacheCreationTokens = nil
+		observations[6].AttributedCostUSD = nil
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+			t.Fatalf("null attribution was treated as zero coverage: %+v", result)
+		}
+		if diagnosticByID(t, result, observations[6].ID).Class == estimate.PointCoverageGapInterval {
+			t.Fatalf("null attribution received coverage-gap classification: %+v", result.Points)
+		}
+	})
+
+	t.Run("zero attribution remains zero coverage", func(t *testing.T) {
+		observations := linearSeries(12, 100, 10, 5)
+		zero := *observations[5].AttributedTokens
+		observations[6].AttributedTokens = &zero
+		setComposition(
+			&observations[6],
+			zero,
+			*observations[5].AttributedInputTokens,
+			*observations[5].AttributedOutputTokens,
+			*observations[5].AttributedCacheReadTokens,
+			*observations[5].AttributedCacheCreationTokens,
+		)
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if !slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+			t.Fatalf("zero attribution did not produce coverage flag: %+v", result)
+		}
+		if diagnosticByID(t, result, observations[6].ID).Class != estimate.PointCoverageGapInterval {
+			t.Fatalf("zero attribution diagnostic = %+v", diagnosticByID(t, result, observations[6].ID))
+		}
+	})
+
+	t.Run("too few clean intervals do not invent residual coverage", func(t *testing.T) {
+		observations := linearSeries(5, 100, 10, 5)
+		for index := 3; index < len(observations); index++ {
+			percent := *observations[index].UsedPercent + 20
+			observations[index].UsedPercent = &percent
+		}
+		result := requireSingleEstimate(t, defaultEstimator().EstimateWindows(observations, testBaseTime.Add(time.Hour)))
+		if slices.Contains(result.Flags, estimate.FlagCoverageGap) {
+			t.Fatalf("degenerate residual series produced a coverage claim: %+v", result)
+		}
+		if result.Confidence == estimate.ConfidenceHigh {
+			t.Fatalf("degenerate residual series received high confidence: %+v", result)
+		}
+	})
+}
+
 func TestCoverageGapAboveThirtyPercentSuppressesEstimate(t *testing.T) {
 	t.Parallel()
 	observations := linearSeries(11, 100, 10, 5)

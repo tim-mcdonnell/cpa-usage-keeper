@@ -30,6 +30,11 @@ const (
 	OutlierStudentizedResidualThreshold        = 3.0
 	OutlierLowConfidenceFraction               = 0.20
 	CoverageGapSuppressionFraction             = 0.30
+	ResidualCoverageMinimumCleanIntervals      = 4
+	ResidualCoverageRateMADMultiplier          = 3.0
+	ResidualCoverageResidualMADMultiplier      = 3.0
+	ResidualCoverageResolutionMultiples        = 2.0
+	ResidualCoverageMinimumPercent             = 0.50
 	StaleWindowFraction                        = 0.10
 	MaterialUtilizationDropMinimum             = 0.50
 	MaterialUtilizationDropResolutionMultiples = 2.0

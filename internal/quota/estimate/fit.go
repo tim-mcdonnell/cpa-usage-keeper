@@ -15,6 +15,14 @@ type costSegment struct {
 	observationIDs map[int64]struct{}
 }
 
+type coverageInterval struct {
+	endObservationIndex int
+	tokenDelta          float64
+	percentDelta        float64
+	rate                float64
+	clean               bool
+}
+
 func (e *estimator) estimateEpoch(epoch *epochSeries, now time.Time) WindowEstimate {
 	value := WindowEstimate{
 		UsageIdentityID: epoch.key.usageIdentityID,
@@ -275,7 +283,171 @@ func coverageAdjustedTokenPoints(records []*classifiedObservation) ([]fitPoint, 
 			percentOffset:    coverageOffset,
 		})
 	}
-	return points, contaminated, max(0, len(raw)-1)
+	residualGaps := residualCoverageGaps(points, resolution)
+	if len(residualGaps) == 0 {
+		return points, contaminated, max(0, len(raw)-1)
+	}
+	refined := make([]fitPoint, 0, len(points)-len(residualGaps))
+	residualOffset := 0.0
+	for _, point := range points {
+		residual, gap := residualGaps[point.observationIndex]
+		record := raw[point.observationIndex].record
+		if gap {
+			residualOffset += residual
+			record.class = PointCoverageGapInterval
+			record.percentOffset = point.percentOffset + residualOffset
+			adjusted := point.y - residualOffset
+			record.adjustedPercent = &adjusted
+			contaminated++
+			continue
+		}
+		point.y -= residualOffset
+		point.percentOffset += residualOffset
+		record.percentOffset = point.percentOffset
+		adjusted := point.y
+		record.adjustedPercent = &adjusted
+		refined = append(refined, point)
+	}
+	return refined, contaminated, max(0, len(raw)-1)
+}
+
+func residualCoverageGaps(points []fitPoint, resolution float64) map[int]float64 {
+	intervals := make([]coverageInterval, 0, max(0, len(points)-1))
+	for index := 1; index < len(points); index++ {
+		tokenDelta := points[index].x - points[index-1].x
+		if tokenDelta <= numericEpsilon {
+			continue
+		}
+		percentDelta := points[index].y - points[index-1].y
+		intervals = append(intervals, coverageInterval{
+			endObservationIndex: points[index].observationIndex,
+			tokenDelta:          tokenDelta,
+			percentDelta:        percentDelta,
+			rate:                percentDelta / tokenDelta,
+		})
+	}
+	if len(intervals) < ResidualCoverageMinimumCleanIntervals+1 {
+		return nil
+	}
+	rates := make([]float64, len(intervals))
+	for index := range intervals {
+		rates[index] = intervals[index].rate
+	}
+	rateMedian := median(rates)
+	rateMAD := medianAbsoluteDeviation(rates, rateMedian)
+	rateUpperBound := rateMedian +
+		ResidualCoverageRateMADMultiplier*normalMADScale*rateMAD
+	// Positive bypass raises utilization per attributed token.
+	// Select the robust lower consensus before fitting so a suspect interval
+	// cannot pull its own baseline upward.
+	clean := make([]coverageInterval, 0, len(intervals))
+	for index := range intervals {
+		intervals[index].clean = intervals[index].rate <= rateUpperBound+numericEpsilon
+		if intervals[index].clean {
+			clean = append(clean, intervals[index])
+		}
+	}
+	if len(clean) < ResidualCoverageMinimumCleanIntervals {
+		return nil
+	}
+	baselineSlope, ok := fitIntervalSlope(clean)
+	if !ok || baselineSlope <= numericEpsilon {
+		return nil
+	}
+	cleanResiduals := make([]float64, len(clean))
+	for index, interval := range clean {
+		cleanResiduals[index] = interval.percentDelta - baselineSlope*interval.tokenDelta
+	}
+	residualMedian := median(cleanResiduals)
+	residualMAD := medianAbsoluteDeviation(cleanResiduals, residualMedian)
+	residualThreshold := math.Max(
+		ResidualCoverageMinimumPercent,
+		math.Max(
+			ResidualCoverageResolutionMultiples*resolution,
+			ResidualCoverageResidualMADMultiplier*normalMADScale*residualMAD,
+		),
+	)
+	residuals := make([]float64, len(intervals))
+	for index, interval := range intervals {
+		residuals[index] = interval.percentDelta - baselineSlope*interval.tokenDelta
+	}
+	suspect := make([]bool, len(intervals))
+	for index, interval := range intervals {
+		if interval.clean {
+			continue
+		}
+		if residuals[index] <= residualThreshold+numericEpsilon {
+			continue
+		}
+		// A compensating negative residual immediately before or after a
+		// positive residual is a point outlier, not evidence of bypass.
+		recoversBefore := index > 0 && residuals[index-1] < -residualThreshold
+		recoversAfter := index+1 < len(intervals) &&
+			residuals[index+1] < -residualThreshold
+		if recoversBefore || recoversAfter {
+			continue
+		}
+		suspect[index] = true
+	}
+	result := make(map[int]float64)
+	for start := 0; start < len(suspect); {
+		if !suspect[start] {
+			start++
+			continue
+		}
+		end := start + 1
+		for end < len(suspect) && suspect[end] {
+			end++
+		}
+		// Consecutive positive residuals form a coherent alternative slope.
+		// Treating that regime as bypass would turn normal workload-mix shifts
+		// into coverage claims and would overstate what the estimator can infer.
+		if end-start == 1 {
+			result[intervals[start].endObservationIndex] = residuals[start]
+		}
+		start = end
+	}
+	return result
+}
+
+const normalMADScale = 1.4826
+
+func fitIntervalSlope(intervals []coverageInterval) (float64, bool) {
+	var tokenSquares float64
+	var tokenPercent float64
+	for _, interval := range intervals {
+		tokenSquares += interval.tokenDelta * interval.tokenDelta
+		tokenPercent += interval.tokenDelta * interval.percentDelta
+	}
+	if tokenSquares <= numericEpsilon {
+		return 0, false
+	}
+	slope := tokenPercent / tokenSquares
+	if math.IsNaN(slope) || math.IsInf(slope, 0) {
+		return 0, false
+	}
+	return slope, true
+}
+
+func median(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	middle := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[middle]
+	}
+	return (sorted[middle-1] + sorted[middle]) / 2
+}
+
+func medianAbsoluteDeviation(values []float64, center float64) float64 {
+	deviations := make([]float64, len(values))
+	for index, value := range values {
+		deviations[index] = math.Abs(value - center)
+	}
+	return median(deviations)
 }
 
 func qualifyingCostSegments(records []*classifiedObservation) []costSegment {
