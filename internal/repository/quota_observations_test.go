@@ -12,6 +12,7 @@ import (
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/pricing"
+	"cpa-usage-keeper/internal/timeutil"
 
 	"gorm.io/gorm"
 )
@@ -124,6 +125,40 @@ func TestSumQuotaAttributedUsageMarksTotalOnlyUnpricedTokensIncomplete(t *testin
 	}
 	if attribution.TotalTokens != 500 || attribution.CostComplete {
 		t.Fatalf("expected total-only unpriced tokens to make cost incomplete, got %+v", attribution)
+	}
+}
+
+func TestSumQuotaAttributedUsageMarksTotalOnlyPricedTokensIncomplete(t *testing.T) {
+	db := openQuotaObservationRepositoryDatabase(t)
+	start := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	event := entities.UsageEvent{
+		EventKey:    "priced-total-only",
+		AuthType:    "oauth",
+		AuthIndex:   "auth-1",
+		Model:       "priced",
+		Timestamp:   start,
+		TotalTokens: 500,
+	}
+	if err := db.Create(&event).Error; err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+
+	attribution, err := SumQuotaAttributedUsage(
+		context.Background(),
+		db,
+		"oauth",
+		"auth-1",
+		start,
+		start.Add(time.Hour),
+		event.ID,
+		QuotaAttributionTrigger{},
+		quotaObservationPricingResolver(t, true),
+	)
+	if err != nil {
+		t.Fatalf("SumQuotaAttributedUsage returned error: %v", err)
+	}
+	if attribution.TotalTokens != 500 || attribution.CostUSD != 0 || attribution.CostComplete {
+		t.Fatalf("expected total-only priced tokens to make zero cost incomplete, got %+v", attribution)
 	}
 }
 
@@ -547,6 +582,80 @@ func TestListRecentQuotaObservationsReturnsBoundedChronologicalSuffix(t *testing
 		if !items[index].ObservedAt.Equal(expected) {
 			t.Fatalf("item %d observed_at = %v, want %v", index, items[index].ObservedAt, expected)
 		}
+	}
+}
+
+func TestQuotaObservationObservedAtPreservesInstantOrderAcrossDSTFallback(t *testing.T) {
+	location, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("load America/Chicago: %v", err)
+	}
+	previousLocal := time.Local
+	t.Setenv("TZ", "America/Chicago")
+	time.Local = location
+	t.Cleanup(func() { time.Local = previousLocal })
+
+	db := openQuotaObservationRepositoryDatabase(t)
+	earlier := time.Date(2026, 11, 1, 6, 50, 0, 0, time.UTC).In(location)
+	later := time.Date(2026, 11, 1, 7, 10, 0, 0, time.UTC).In(location)
+	if !earlier.Before(later) {
+		t.Fatalf("invalid fallback fixture: earlier=%v later=%v", earlier, later)
+	}
+	resetAt := later.Add(5 * time.Hour)
+	rows := []entities.QuotaObservation{
+		quotaObservationRepositoryRow(earlier, resetAt),
+		quotaObservationRepositoryRow(later, resetAt),
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("seed fallback observations: %v", err)
+	}
+
+	var stored []struct {
+		ObservedAt string `gorm:"column:observed_at"`
+	}
+	// CAST bypasses the SQLite driver's datetime parsing so this asserts the actual indexed TEXT representation.
+	if err := db.Raw("SELECT CAST(observed_at AS TEXT) AS observed_at FROM quota_observations ORDER BY id ASC").Scan(&stored).Error; err != nil {
+		t.Fatalf("read stored observed_at text: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored observed_at row count = %d, want 2", len(stored))
+	}
+	wantStored := []string{
+		timeutil.FormatSortableStorageTime(earlier),
+		timeutil.FormatSortableStorageTime(later),
+	}
+	if stored[0].ObservedAt != wantStored[0] || stored[1].ObservedAt != wantStored[1] || stored[0].ObservedAt >= stored[1].ObservedAt {
+		t.Fatalf("observed_at text is not instant-sortable: got=%q want=%q", []string{stored[0].ObservedAt, stored[1].ObservedAt}, wantStored)
+	}
+
+	recent, err := ListRecentQuotaObservations(context.Background(), db, 1, rows[0].WindowKindID, 1)
+	if err != nil {
+		t.Fatalf("ListRecentQuotaObservations returned error: %v", err)
+	}
+	if len(recent) != 1 || !recent[0].ObservedAt.Equal(later) {
+		t.Fatalf("latest observation = %+v, want observed_at %v", recent, later)
+	}
+
+	listed, truncated, err := ListQuotaObservations(
+		context.Background(),
+		db,
+		1,
+		rows[0].WindowKindID,
+		earlier.Add(-time.Minute),
+		later.Add(time.Minute),
+		10,
+	)
+	if err != nil {
+		t.Fatalf("ListQuotaObservations returned error: %v", err)
+	}
+	if truncated || len(listed) != 2 || !listed[0].ObservedAt.Equal(earlier) || !listed[1].ObservedAt.Equal(later) {
+		t.Fatalf("fallback range returned rows=%+v truncated=%v", listed, truncated)
+	}
+
+	candidate := quotaObservationRepositoryRow(later.Add(2*time.Minute), resetAt)
+	result, err := InsertQuotaObservationIfDue(context.Background(), db, candidate, 5*time.Minute, 400)
+	if err != nil || result != QuotaObservationSkipped {
+		t.Fatalf("spacing against instant-latest row: result=%s err=%v", result, err)
 	}
 }
 
