@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -316,6 +317,37 @@ func ListQuotaObservations(
 		rows = rows[:limit]
 	}
 	return rows, truncated, nil
+}
+
+// ListRecentQuotaObservations returns a bounded complete suffix in chronological order.
+func ListRecentQuotaObservations(
+	ctx context.Context,
+	db *gorm.DB,
+	usageIdentityID int64,
+	windowKindID string,
+	limit int,
+) ([]entities.QuotaObservation, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database is nil")
+	}
+	if usageIdentityID <= 0 || strings.TrimSpace(windowKindID) == "" || limit <= 0 {
+		return []entities.QuotaObservation{}, nil
+	}
+	var rows []entities.QuotaObservation
+	err := db.WithContext(contextOrBackground(ctx)).
+		Where(
+			"usage_identity_id = ? AND window_kind_id = ?",
+			usageIdentityID,
+			strings.TrimSpace(windowKindID),
+		).
+		Order("observed_at DESC, id DESC").
+		Limit(limit).
+		Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("list recent quota observations: %w", err)
+	}
+	slices.Reverse(rows)
+	return rows, nil
 }
 
 func quotaObservationResetChanged(previous entities.QuotaObservation, candidate entities.QuotaObservation) bool {

@@ -510,6 +510,46 @@ func TestListQuotaObservationsOrdersCapsAndMarksTruncation(t *testing.T) {
 	}
 }
 
+func TestListRecentQuotaObservationsReturnsBoundedChronologicalSuffix(t *testing.T) {
+	db := openQuotaObservationRepositoryDatabase(t)
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.Local)
+	rows := make([]entities.QuotaObservation, 6)
+	for index := range rows {
+		rows[index] = quotaObservationRepositoryRow(
+			start.Add(time.Duration(index)*time.Minute),
+			start.Add(5*time.Hour),
+		)
+	}
+	wrongIdentity := quotaObservationRepositoryRow(start.Add(10*time.Minute), start.Add(5*time.Hour))
+	wrongIdentity.UsageIdentityID = 2
+	wrongWindow := quotaObservationRepositoryRow(start.Add(11*time.Minute), start.Add(5*time.Hour))
+	wrongWindow.WindowKindID = "codex/overall/rate_limit/604800"
+	rows = append(rows, wrongIdentity, wrongWindow)
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("seed observation series: %v", err)
+	}
+
+	items, err := ListRecentQuotaObservations(
+		context.Background(),
+		db,
+		1,
+		"codex/overall/rate_limit/18000",
+		3,
+	)
+	if err != nil {
+		t.Fatalf("ListRecentQuotaObservations returned error: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected bounded suffix of 3 rows, got %d", len(items))
+	}
+	for index, expectedMinute := range []int{3, 4, 5} {
+		expected := start.Add(time.Duration(expectedMinute) * time.Minute)
+		if !items[index].ObservedAt.Equal(expected) {
+			t.Fatalf("item %d observed_at = %v, want %v", index, items[index].ObservedAt, expected)
+		}
+	}
+}
+
 func TestInsertQuotaObservationSkipsColdRestartDuplicate(t *testing.T) {
 	db := openQuotaObservationRepositoryDatabase(t)
 	observedAt := time.Date(2026, 7, 23, 10, 0, 0, 0, time.Local)

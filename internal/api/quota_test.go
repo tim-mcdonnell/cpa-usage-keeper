@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"cpa-usage-keeper/internal/auth"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/quota"
+	"cpa-usage-keeper/internal/quota/estimate"
 )
 
 type quotaProviderStub struct {
@@ -28,6 +30,12 @@ type quotaProviderStub struct {
 	cacheRequest             quota.CacheRequest
 	cacheResponse            quota.CacheResponse
 	cacheErr                 error
+	capacityRequest          quota.CapacityRequest
+	capacityResponse         quota.CapacityResponse
+	capacityErr              error
+	capacityDetailRequest    quota.CapacityDetailRequest
+	capacityDetailResponse   quota.CapacityDetailResponse
+	capacityDetailErr        error
 	observationRequest       quota.ObservationSeriesRequest
 	observationResponse      quota.ObservationSeriesResponse
 	observationErr           error
@@ -37,6 +45,22 @@ type quotaProviderStub struct {
 	inspectionStartErr       error
 	inspectionStatusCalls    int
 	inspectionStartCalls     int
+}
+
+func (s *quotaProviderStub) GetCapacity(ctx context.Context, request quota.CapacityRequest) (quota.CapacityResponse, error) {
+	s.capacityRequest = request
+	if s.capacityErr != nil {
+		return quota.CapacityResponse{}, s.capacityErr
+	}
+	return s.capacityResponse, nil
+}
+
+func (s *quotaProviderStub) GetCapacityDetail(ctx context.Context, request quota.CapacityDetailRequest) (quota.CapacityDetailResponse, error) {
+	s.capacityDetailRequest = request
+	if s.capacityDetailErr != nil {
+		return quota.CapacityDetailResponse{}, s.capacityDetailErr
+	}
+	return s.capacityDetailResponse, nil
 }
 
 func (s *quotaProviderStub) ListObservations(ctx context.Context, request quota.ObservationSeriesRequest) (quota.ObservationSeriesResponse, error) {
@@ -130,6 +154,303 @@ func TestQuotaCacheReturnsCachedCurrentPageQuota(t *testing.T) {
 	body := resp.Body.String()
 	if !contains(body, `"items"`) || !contains(body, `"file_name":"claude-user.json"`) || !contains(body, `"refreshed_at":"2026-05-26T12:00:00Z"`) || contains(body, `"updated_at"`) || !contains(body, `"id":"auth-1"`) || !contains(body, `"label":"Weekly"`) || !contains(body, `"subscription":{"provider":"codex","plan":"plus"}`) || contains(body, `"planType"`) {
 		t.Fatalf("unexpected response body: %s", body)
+	}
+}
+
+func TestQuotaCapacityForwardsBatchShapeAndReturnsEmptyVersusInsufficient(t *testing.T) {
+	provider := &quotaProviderStub{capacityResponse: quota.CapacityResponse{
+		Items: []quota.CredentialCapacity{
+			{AuthIndex: "auth-empty", Windows: []quota.CapacityWindow{}},
+			{
+				AuthIndex: "auth-data",
+				Windows: []quota.CapacityWindow{{
+					Provider:      "codex",
+					WindowKindID:  estimate.WindowKindCodexFiveHour,
+					WindowSeconds: 18000,
+					CurrentEpoch: &estimate.WindowEstimate{
+						Confidence: estimate.ConfidenceInsufficient,
+						Points: []estimate.PointDiagnostic{{
+							ObservationID: 7,
+							Class:         estimate.PointEpochUnassigned,
+						}},
+						Method: estimate.MethodOLSBlockBootstrap,
+					},
+					RecentEpochs: []estimate.WindowEstimate{},
+				}},
+			},
+		},
+	}}
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: provider})
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/quota/capacity",
+		strings.NewReader(`{"auth_indexes":["auth-empty","auth-data"]}`),
+	)
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := strings.Join(provider.capacityRequest.AuthIndexes, ","); got != "auth-empty,auth-data" {
+		t.Fatalf("capacity auth indexes = %q", got)
+	}
+	body := resp.Body.String()
+	if !contains(body, `"auth_index":"auth-empty","windows":[]`) ||
+		!contains(body, `"confidence":"insufficient"`) ||
+		!contains(body, `"epoch_reset_at":null`) ||
+		!contains(body, `"recent_epochs":[]`) {
+		t.Fatalf("unexpected capacity response: %s", body)
+	}
+}
+
+func TestQuotaCapacityDetailReturnsClassificationsObservationsAndExactFittedSeries(t *testing.T) {
+	resetAt := time.Date(2026, 7, 23, 15, 0, 0, 0, time.UTC)
+	provider := &quotaProviderStub{capacityDetailResponse: quota.CapacityDetailResponse{
+		Estimate: estimate.WindowEstimate{
+			Provider:     "codex",
+			WindowKindID: estimate.WindowKindCodexFiveHour,
+			EpochResetAt: &resetAt,
+			Confidence:   estimate.ConfidenceLow,
+			Points: []estimate.PointDiagnostic{{
+				ObservationID:           7,
+				Class:                   estimate.PointCoverageGapInterval,
+				CumulativePercentOffset: 2,
+			}},
+			FittedSeries: []estimate.FittedPoint{{
+				ObservationID:           7,
+				AttributedTokens:        100,
+				RawUsedPercent:          12,
+				AdjustedUsedPercent:     10,
+				CumulativePercentOffset: 2,
+				FittedPercent:           10,
+			}},
+			Method: estimate.MethodOLSBlockBootstrap,
+		},
+		Observations: []entities.QuotaObservation{{
+			ID:           7,
+			AuthIndex:    "auth-1",
+			WindowKindID: estimate.WindowKindCodexFiveHour,
+		}},
+	}}
+	path := "/api/v1/quota/capacity/detail?auth_index=auth-1" +
+		"&window_kind_id=codex%2Foverall%2Frate_limit%2F18000" +
+		"&epoch_reset_at=2026-07-23T15%3A00%3A00Z"
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: provider})
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if provider.capacityDetailRequest.AuthIndex != "auth-1" ||
+		provider.capacityDetailRequest.WindowKindID != estimate.WindowKindCodexFiveHour ||
+		provider.capacityDetailRequest.EpochResetAt == nil ||
+		!provider.capacityDetailRequest.EpochResetAt.Equal(resetAt) {
+		t.Fatalf("unexpected capacity detail request: %+v", provider.capacityDetailRequest)
+	}
+	body := resp.Body.String()
+	if !contains(body, `"class":"coverage_gap_interval"`) ||
+		!contains(body, `"cumulative_percent_offset":2`) ||
+		!contains(body, `"adjusted_used_percent":10`) ||
+		!contains(body, `"observations":[{"id":7`) {
+		t.Fatalf("unexpected capacity detail response: %s", body)
+	}
+}
+
+func TestQuotaCapacityRejectsMalformedRequestsAndUsesStandardErrors(t *testing.T) {
+	testCases := []struct {
+		name     string
+		method   string
+		path     string
+		body     string
+		provider *quotaProviderStub
+		status   int
+		error    string
+	}{
+		{
+			name:     "batch malformed JSON",
+			method:   http.MethodPost,
+			path:     "/api/v1/quota/capacity",
+			body:     `{`,
+			provider: &quotaProviderStub{},
+			status:   http.StatusBadRequest,
+			error:    "auth_indexes are required",
+		},
+		{
+			name:     "detail missing window",
+			method:   http.MethodGet,
+			path:     "/api/v1/quota/capacity/detail?auth_index=auth-1",
+			provider: &quotaProviderStub{},
+			status:   http.StatusBadRequest,
+			error:    "capacity detail parameters are invalid",
+		},
+		{
+			name:     "detail malformed epoch",
+			method:   http.MethodGet,
+			path:     "/api/v1/quota/capacity/detail?auth_index=auth-1&window_kind_id=kind&epoch_reset_at=nope",
+			provider: &quotaProviderStub{},
+			status:   http.StatusBadRequest,
+			error:    "capacity detail parameters are invalid",
+		},
+		{
+			name:     "batch provider failure",
+			method:   http.MethodPost,
+			path:     "/api/v1/quota/capacity",
+			body:     `{"auth_indexes":["auth-1"]}`,
+			provider: &quotaProviderStub{capacityErr: errors.New("database unavailable")},
+			status:   http.StatusInternalServerError,
+			error:    "internal server error",
+		},
+		{
+			name:     "detail not found",
+			method:   http.MethodGet,
+			path:     "/api/v1/quota/capacity/detail?auth_index=auth-1&window_kind_id=kind",
+			provider: &quotaProviderStub{capacityDetailErr: quota.ErrNotFound},
+			status:   http.StatusNotFound,
+			error:    "quota capacity not found",
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: testCase.provider})
+			req := httptest.NewRequest(testCase.method, testCase.path, strings.NewReader(testCase.body))
+			if testCase.method == http.MethodPost {
+				req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+				req.Header.Set("Content-Type", "application/json")
+			}
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			if resp.Code != testCase.status || !contains(resp.Body.String(), `"error":"`+testCase.error+`"`) {
+				t.Fatalf("status=%d body=%s, want status=%d error=%q", resp.Code, resp.Body.String(), testCase.status, testCase.error)
+			}
+		})
+	}
+}
+
+func TestQuotaCapacityEnforcesCredentialAndBodyLimitsBeforeProvider(t *testing.T) {
+	authIndexes := make([]string, quota.CapacityMaxAuthIndexes+1)
+	for index := range authIndexes {
+		authIndexes[index] = "auth-" + strconv.Itoa(index)
+	}
+	bodyBytes, err := json.Marshal(map[string]any{"auth_indexes": authIndexes})
+	if err != nil {
+		t.Fatalf("marshal auth indexes: %v", err)
+	}
+	testCases := []struct {
+		name         string
+		body         string
+		wantStatus   int
+		wantError    string
+		wantProvider bool
+	}{
+		{
+			name:         "exactly 100 credentials",
+			body:         mustMarshalCapacityAuthIndexes(t, authIndexes[:quota.CapacityMaxAuthIndexes]),
+			wantStatus:   http.StatusOK,
+			wantProvider: true,
+		},
+		{
+			name:       "101 credentials",
+			body:       string(bodyBytes),
+			wantStatus: http.StatusBadRequest,
+			wantError:  "at most 100 auth_indexes per request",
+		},
+		{
+			name: "exactly 64 KiB",
+			body: func() string {
+				prefix := `{"auth_indexes":["auth-1"]}`
+				return prefix + strings.Repeat(" ", capacityRequestBodyLimit-len(prefix))
+			}(),
+			wantStatus:   http.StatusOK,
+			wantProvider: true,
+		},
+		{
+			name: "over 64 KiB",
+			body: func() string {
+				prefix := `{"auth_indexes":["auth-1"]}`
+				return prefix + strings.Repeat(" ", capacityRequestBodyLimit-len(prefix)+1)
+			}(),
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantError:  "request body too large",
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			provider := &quotaProviderStub{}
+			router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: provider})
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/quota/capacity",
+				strings.NewReader(testCase.body),
+			)
+			req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+
+			router.ServeHTTP(resp, req)
+
+			if resp.Code != testCase.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", resp.Code, resp.Body.String(), testCase.wantStatus)
+			}
+			if testCase.wantError != "" &&
+				resp.Body.String() != `{"error":"`+testCase.wantError+`"}` {
+				t.Fatalf("body = %s, want exact error %q", resp.Body.String(), testCase.wantError)
+			}
+			called := len(provider.capacityRequest.AuthIndexes) > 0
+			if called != testCase.wantProvider {
+				t.Fatalf("provider called = %v, want %v", called, testCase.wantProvider)
+			}
+		})
+	}
+}
+
+func mustMarshalCapacityAuthIndexes(t *testing.T, authIndexes []string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"auth_indexes": authIndexes})
+	if err != nil {
+		t.Fatalf("marshal capacity auth indexes: %v", err)
+	}
+	return string(body)
+}
+
+func TestQuotaCapacityEndpointsRejectAPIKeyViewer(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	viewerToken, _, err := sessions.CreateAPIKeyViewer(42)
+	if err != nil {
+		t.Fatalf("CreateAPIKeyViewer returned error: %v", err)
+	}
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
+	provider := &quotaProviderStub{}
+	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{Quota: provider})
+	testCases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/api/v1/quota/capacity", body: `{"auth_indexes":["auth-1"]}`},
+		{method: http.MethodGet, path: "/api/v1/quota/capacity/detail?auth_index=auth-1&window_kind_id=kind"},
+	}
+	for _, testCase := range testCases {
+		req := httptest.NewRequest(testCase.method, testCase.path, strings.NewReader(testCase.body))
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: viewerToken})
+		if testCase.method == http.MethodPost {
+			req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusForbidden {
+			t.Fatalf("%s %s returned %d body=%s", testCase.method, testCase.path, resp.Code, resp.Body.String())
+		}
+	}
+	if len(provider.capacityRequest.AuthIndexes) != 0 || provider.capacityDetailRequest.AuthIndex != "" {
+		t.Fatalf("provider was called for API key viewer: batch=%+v detail=%+v", provider.capacityRequest, provider.capacityDetailRequest)
 	}
 }
 
