@@ -18,7 +18,7 @@ type QuotaObservation struct {
 	GroupKey      string    `gorm:"not null" json:"group_key"`
 	WindowRole    string    `gorm:"not null" json:"window_role"`
 	WindowSeconds *int64    `json:"window_seconds"`
-	ObservedAt    time.Time `gorm:"serializer:storageTime;not null;index:idx_quota_observations_identity_window_time,priority:3;index:idx_quota_observations_observed_at" json:"observed_at"`
+	ObservedAt    time.Time `gorm:"serializer:sortableTime;not null;index:idx_quota_observations_identity_window_time,priority:3;index:idx_quota_observations_observed_at" json:"observed_at"`
 	Source        string    `gorm:"not null" json:"source"`
 
 	UsedPercent       *float64 `json:"used_percent"`
@@ -28,6 +28,7 @@ type QuotaObservation struct {
 	LimitValue        *float64 `json:"limit_value"`
 	Remaining         *float64 `json:"remaining"`
 
+	// ResetAt is compared in Go and is not used in SQLite ordering or range predicates, so storageTime remains sufficient.
 	ResetAt           *time.Time `gorm:"serializer:storageTime" json:"reset_at"`
 	ResetRaw          *string    `json:"reset_raw"`
 	ResetAfterSeconds *int64     `json:"reset_after_seconds"`
@@ -45,5 +46,6 @@ type QuotaObservation struct {
 	TriggeringEventKey            *string  `json:"triggering_event_key"`
 	PricingSnapshotHash           string   `gorm:"not null" json:"pricing_snapshot_hash"`
 
+	// CreatedAt is write-audit metadata and is not used in SQLite ordering or range predicates, so storageTime remains sufficient.
 	CreatedAt time.Time `gorm:"serializer:storageTime;not null" json:"created_at"`
 }

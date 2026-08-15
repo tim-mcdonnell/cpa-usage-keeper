@@ -185,7 +185,12 @@ func SumQuotaAttributedUsage(
 			row.CacheCreationTokens,
 		))
 		result.CostUSD += cost.Cost.TotalCostUSD
-		if !cost.Available || (row.TotalTokens > 0 && cost.MatchedModel == "") {
+		totalOnly := row.TotalTokens > 0 &&
+			row.InputTokens == 0 &&
+			row.OutputTokens == 0 &&
+			row.CacheReadTokens == 0 &&
+			row.CacheCreationTokens == 0
+		if !cost.Available || totalOnly || (row.TotalTokens > 0 && cost.MatchedModel == "") {
 			result.CostComplete = false
 		}
 	}
@@ -223,7 +228,7 @@ func InsertQuotaObservationIfDue(
 						"usage_identity_id = ? AND window_kind_id = ? AND observed_at = ? AND source = ?",
 						observation.UsageIdentityID,
 						observation.WindowKindID,
-						timeutil.FormatStorageTime(observation.ObservedAt),
+						timeutil.FormatSortableStorageTime(observation.ObservedAt),
 						observation.Source,
 					)
 				if observation.TriggeringEventKey == nil {
@@ -261,8 +266,8 @@ func InsertQuotaObservationIfDue(
 					"usage_identity_id = ? AND window_kind_id = ? AND observed_at >= ? AND observed_at < ?",
 					observation.UsageIdentityID,
 					observation.WindowKindID,
-					timeutil.FormatStorageTime(dayStart),
-					timeutil.FormatStorageTime(dayEnd),
+					timeutil.FormatSortableStorageTime(dayStart),
+					timeutil.FormatSortableStorageTime(dayEnd),
 				).
 				Count(&count).Error; err != nil {
 				return fmt.Errorf("count daily quota observations: %w", err)
@@ -303,8 +308,8 @@ func ListQuotaObservations(
 			"usage_identity_id = ? AND window_kind_id = ? AND observed_at >= ? AND observed_at < ?",
 			usageIdentityID,
 			strings.TrimSpace(windowKindID),
-			timeutil.FormatStorageTime(start),
-			timeutil.FormatStorageTime(end),
+			timeutil.FormatSortableStorageTime(start),
+			timeutil.FormatSortableStorageTime(end),
 		).
 		Order("observed_at ASC, id ASC").
 		Limit(limit + 1).
