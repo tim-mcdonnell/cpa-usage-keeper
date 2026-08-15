@@ -65,6 +65,8 @@ const (
 	migrationUsageOverviewFiveDimensions = "20260723_usage_overview_five_dimensions"
 	// migrationModelPriceRules 创建每模型精确字段倍率规则表。
 	migrationModelPriceRules = "20260723_model_price_rules"
+	// migrationQuotaObservations 创建 append-only quota observation 事件表。
+	migrationQuotaObservations = "20260723_quota_observations"
 	// migrationUsageAggregationCheckpoints 原子合并 Overview/Activity 两张旧水位表。
 	migrationUsageAggregationCheckpoints = "20260726_usage_aggregation_checkpoints"
 	// migrationUsageLatencyStats 用可恢复短事务回填 Latency hour/day 单表。
@@ -187,6 +189,7 @@ func orderedMigrations() []databaseMigration {
 		// 五维重建自己管理 schema/setup 与 1000-event 小事务，外层不能再包长事务。
 		{version: migrationUsageOverviewFiveDimensions, run: usageOverviewFiveDimensionsMigration, disableTransaction: true},
 		{version: migrationModelPriceRules, run: createModelPriceRulesMigration},
+		{version: migrationQuotaObservations, run: createQuotaObservationsMigration},
 		// 通用水位建表、复制、验证和旧表删除必须由默认外层事务共同保护。
 		{version: migrationUsageAggregationCheckpoints, run: usageAggregationCheckpointsMigration},
 		// Latency 回填逐页提交，外层长事务会破坏断点续跑语义。

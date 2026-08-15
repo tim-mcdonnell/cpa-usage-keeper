@@ -53,6 +53,7 @@ func parseAntigravityQuotaPayload(response *apicall.Response) (*AntigravityQuota
 				Window:            stringField(bucketObject, "window"),
 				RemainingFraction: remainingFraction,
 				ResetTime:         stringField(bucketObject, "resetTime", "reset_time"),
+				resetTimeRaw:      rawScalarField(bucketObject, "resetTime", "reset_time"),
 			})
 		}
 		if len(group.Buckets) > 0 {
@@ -130,14 +131,29 @@ func parseCodexUsageWindow(object map[string]json.RawMessage) *CodexUsageWindow 
 	if object == nil {
 		return nil
 	}
-	return &CodexUsageWindow{
-		UsedPercent:        floatField(object, "used_percent", "usedPercent"),
-		LimitWindowSeconds: intField(object, "limit_window_seconds", "limitWindowSeconds"),
-		ResetAfterSeconds:  intField(object, "reset_after_seconds", "resetAfterSeconds"),
-		ResetAt:            intField(object, "reset_at", "resetAt"),
-		WindowUsageTokens:  intPtrField(object, "window_usage_tokens", "windowUsageTokens"),
-		WindowUsageCost:    floatPtrField(object, "window_usage_cost", "windowUsageCost"),
+	window := &CodexUsageWindow{
+		rawPresenceKnown:  true,
+		WindowUsageTokens: intPtrField(object, "window_usage_tokens", "windowUsageTokens"),
+		WindowUsageCost:   floatPtrField(object, "window_usage_cost", "windowUsageCost"),
 	}
+	if value := floatPtrField(object, "used_percent", "usedPercent"); value != nil {
+		window.UsedPercent = *value
+		window.usedPercentPresent = true
+	}
+	if value := intPtrField(object, "limit_window_seconds", "limitWindowSeconds"); value != nil {
+		window.LimitWindowSeconds = *value
+		window.limitWindowSecondsPresent = true
+	}
+	if value := intPtrField(object, "reset_after_seconds", "resetAfterSeconds"); value != nil {
+		window.ResetAfterSeconds = *value
+		window.resetAfterSecondsPresent = true
+	}
+	if value := intPtrField(object, "reset_at", "resetAt"); value != nil {
+		window.ResetAt = *value
+		window.resetAtPresent = true
+		window.resetAtRaw = rawScalarField(object, "reset_at", "resetAt")
+	}
+	return window
 }
 
 func parseGeminiCliQuotaPayload(response *apicall.Response) (*GeminiCliQuotaPayload, error) {
@@ -151,13 +167,22 @@ func parseGeminiCliQuotaPayload(response *apicall.Response) (*GeminiCliQuotaPayl
 		if bucketObject == nil {
 			continue
 		}
-		payload.Buckets = append(payload.Buckets, GeminiCliQuotaBucket{
-			ModelID:           stringField(bucketObject, "modelId", "model_id"),
-			TokenType:         stringField(bucketObject, "tokenType", "token_type"),
-			RemainingFraction: floatField(bucketObject, "remainingFraction", "remaining_fraction"),
-			RemainingAmount:   floatField(bucketObject, "remainingAmount", "remaining_amount"),
-			ResetTime:         stringField(bucketObject, "resetTime", "reset_time"),
-		})
+		bucket := GeminiCliQuotaBucket{
+			ModelID:          stringField(bucketObject, "modelId", "model_id"),
+			TokenType:        stringField(bucketObject, "tokenType", "token_type"),
+			ResetTime:        stringField(bucketObject, "resetTime", "reset_time"),
+			rawPresenceKnown: true,
+			resetTimeRaw:     rawScalarField(bucketObject, "resetTime", "reset_time"),
+		}
+		if value := floatPtrField(bucketObject, "remainingFraction", "remaining_fraction"); value != nil {
+			bucket.RemainingFraction = *value
+			bucket.remainingFractionPresent = true
+		}
+		if value := floatPtrField(bucketObject, "remainingAmount", "remaining_amount"); value != nil {
+			bucket.RemainingAmount = *value
+			bucket.remainingAmountPresent = true
+		}
+		payload.Buckets = append(payload.Buckets, bucket)
 	}
 	return payload, nil
 }
@@ -187,10 +212,15 @@ func parseGeminiCliUserTier(object map[string]json.RawMessage) *GeminiCliUserTie
 		if creditObject == nil {
 			continue
 		}
-		tier.AvailableCredits = append(tier.AvailableCredits, GeminiCliCredits{
-			CreditType:   stringField(creditObject, "creditType", "credit_type"),
-			CreditAmount: floatField(creditObject, "creditAmount", "credit_amount"),
-		})
+		credit := GeminiCliCredits{
+			CreditType:       stringField(creditObject, "creditType", "credit_type"),
+			rawPresenceKnown: true,
+		}
+		if value := floatPtrField(creditObject, "creditAmount", "credit_amount"); value != nil {
+			credit.CreditAmount = *value
+			credit.creditAmountPresent = true
+		}
+		tier.AvailableCredits = append(tier.AvailableCredits, credit)
 	}
 	return tier
 }
@@ -216,22 +246,36 @@ func parseClaudeUsageWindow(object map[string]json.RawMessage) *ClaudeUsageWindo
 	if object == nil {
 		return nil
 	}
-	return &ClaudeUsageWindow{
-		Utilization: floatField(object, "utilization"),
-		ResetsAt:    stringField(object, "resets_at", "resetsAt"),
+	window := &ClaudeUsageWindow{
+		rawPresenceKnown: true,
+		ResetsAt:         stringField(object, "resets_at", "resetsAt"),
 	}
+	if value := floatPtrField(object, "utilization"); value != nil {
+		window.Utilization = *value
+		window.utilizationPresent = true
+	}
+	window.resetsAtRaw = rawScalarField(object, "resets_at", "resetsAt")
+	return window
 }
 
 func parseClaudeExtraUsage(object map[string]json.RawMessage) *ClaudeExtraUsage {
 	if object == nil {
 		return nil
 	}
-	return &ClaudeExtraUsage{
-		IsEnabled:    boolField(object, "is_enabled", "isEnabled"),
-		MonthlyLimit: floatField(object, "monthly_limit", "monthlyLimit"),
-		UsedCredits:  floatField(object, "used_credits", "usedCredits"),
-		Utilization:  floatPtrField(object, "utilization"),
+	extra := &ClaudeExtraUsage{
+		IsEnabled:        boolField(object, "is_enabled", "isEnabled"),
+		Utilization:      floatPtrField(object, "utilization"),
+		rawPresenceKnown: true,
 	}
+	if value := floatPtrField(object, "monthly_limit", "monthlyLimit"); value != nil {
+		extra.MonthlyLimit = *value
+		extra.monthlyLimitPresent = true
+	}
+	if value := floatPtrField(object, "used_credits", "usedCredits"); value != nil {
+		extra.UsedCredits = *value
+		extra.usedCreditsPresent = true
+	}
+	return extra
 }
 
 func parseClaudeProfilePayload(response *apicall.Response) (*ClaudeProfileResponse, error) {
@@ -286,33 +330,49 @@ func parseKimiUsagePayload(response *apicall.Response) (*KimiUsagePayload, error
 			continue
 		}
 		detail := parseKimiUsageDetail(objectField(limitObject, "detail"))
-		payload.Limits = append(payload.Limits, KimiLimitItem{
-			Name:      stringField(limitObject, "name"),
-			Title:     stringField(limitObject, "title"),
-			Scope:     stringField(limitObject, "scope"),
-			Detail:    detail,
-			Window:    parseKimiLimitWindow(objectField(limitObject, "window")),
-			Used:      floatField(limitObject, "used"),
-			Limit:     floatField(limitObject, "limit"),
-			Remaining: floatField(limitObject, "remaining"),
-			Duration:  intField(limitObject, "duration"),
-			TimeUnit:  stringField(limitObject, "timeUnit", "time_unit"),
-			ResetAt:   stringField(limitObject, "resetAt", "reset_at", "resetTime", "reset_time"),
-			ResetIn:   floatField(limitObject, "resetIn", "reset_in"),
-			TTL:       floatField(limitObject, "ttl"),
-		})
-		limit := &payload.Limits[len(payload.Limits)-1]
+		limit := KimiLimitItem{
+			Name:             stringField(limitObject, "name"),
+			Title:            stringField(limitObject, "title"),
+			Scope:            stringField(limitObject, "scope"),
+			Detail:           detail,
+			Window:           parseKimiLimitWindow(objectField(limitObject, "window")),
+			Duration:         intField(limitObject, "duration"),
+			TimeUnit:         stringField(limitObject, "timeUnit", "time_unit"),
+			ResetAt:          stringField(limitObject, "resetAt", "reset_at", "resetTime", "reset_time"),
+			TTL:              floatField(limitObject, "ttl"),
+			rawPresenceKnown: true,
+			resetAtRaw:       rawScalarField(limitObject, "resetAt", "reset_at", "resetTime", "reset_time"),
+		}
+		if value := floatPtrField(limitObject, "used"); value != nil {
+			limit.Used = *value
+			limit.usedPresent = true
+		}
+		if value := floatPtrField(limitObject, "limit"); value != nil {
+			limit.Limit = *value
+			limit.limitPresent = true
+		}
+		if value := floatPtrField(limitObject, "remaining"); value != nil {
+			limit.Remaining = *value
+			limit.remainingPresent = true
+		}
+		if value := floatPtrField(limitObject, "resetIn", "reset_in"); value != nil {
+			limit.ResetIn = *value
+			limit.resetInPresent = true
+		}
 		if detail != nil {
 			if limit.ResetAt == "" {
 				limit.ResetAt = detail.ResetAt
+				limit.resetAtRaw = detail.resetAtRaw
 			}
-			if limit.ResetIn == 0 {
+			if !limit.resetInPresent && detail.resetInPresent {
 				limit.ResetIn = detail.ResetIn
+				limit.resetInPresent = true
 			}
 			if limit.TTL == 0 {
 				limit.TTL = detail.TTL
 			}
 		}
+		payload.Limits = append(payload.Limits, limit)
 	}
 	return payload, nil
 }
@@ -337,14 +397,15 @@ func parseXAIBillingConfig(object map[string]json.RawMessage) *XAIBillingConfig 
 		return nil
 	}
 	config := &XAIBillingConfig{
-		CurrentPeriod:      parseXAIBillingPeriod(objectField(object, "currentPeriod", "current_period")),
-		CreditUsagePercent: xaiFloatPtrField(object, "creditUsagePercent", "credit_usage_percent"),
-		MonthlyLimit:       parseXAIMoneyField(object, "monthlyLimit", "monthly_limit"),
-		Used:               parseXAIMoneyField(object, "used"),
-		OnDemandCap:        parseXAIMoneyField(object, "onDemandCap", "on_demand_cap"),
-		OnDemandUsed:       parseXAIMoneyField(object, "onDemandUsed", "on_demand_used"),
-		BillingPeriodStart: stringField(object, "billingPeriodStart", "billing_period_start"),
-		BillingPeriodEnd:   stringField(object, "billingPeriodEnd", "billing_period_end"),
+		CurrentPeriod:       parseXAIBillingPeriod(objectField(object, "currentPeriod", "current_period")),
+		CreditUsagePercent:  xaiFloatPtrField(object, "creditUsagePercent", "credit_usage_percent"),
+		MonthlyLimit:        parseXAIMoneyField(object, "monthlyLimit", "monthly_limit"),
+		Used:                parseXAIMoneyField(object, "used"),
+		OnDemandCap:         parseXAIMoneyField(object, "onDemandCap", "on_demand_cap"),
+		OnDemandUsed:        parseXAIMoneyField(object, "onDemandUsed", "on_demand_used"),
+		BillingPeriodStart:  stringField(object, "billingPeriodStart", "billing_period_start"),
+		BillingPeriodEnd:    stringField(object, "billingPeriodEnd", "billing_period_end"),
+		billingPeriodEndRaw: rawScalarField(object, "billingPeriodEnd", "billing_period_end"),
 	}
 	for _, raw := range arrayField(object, "productUsage", "product_usage") {
 		productObject := rawObject(raw)
@@ -385,11 +446,13 @@ func parseXAIBillingPeriod(object map[string]json.RawMessage) *XAIBillingPeriod 
 	if object == nil {
 		return nil
 	}
-	return &XAIBillingPeriod{
+	period := &XAIBillingPeriod{
 		Type:  stringField(object, "type"),
 		Start: stringField(object, "start"),
 		End:   stringField(object, "end"),
 	}
+	period.endRaw = rawScalarField(object, "end")
+	return period
 }
 
 func parseXAIMoneyField(object map[string]json.RawMessage, keys ...string) XAIMoneyValue {
@@ -421,20 +484,32 @@ func parseKimiUsageDetail(object map[string]json.RawMessage) *KimiUsageDetail {
 	used, hasUsed := floatValue(object, "used")
 	limit, hasLimit := floatValue(object, "limit")
 	remaining, hasRemaining := floatValue(object, "remaining")
-	// Kimi 省略 used 时，只有 parser 仍能区分字段缺失与显式零值，因此在这里按上游额度关系补齐。
+	usedDerived := false
+	// Kimi 省略 used 时按 provider 的 limit - remaining 关系补齐展示值，同时保留 raw presence 供 observation 只存事实。
 	if !hasUsed && hasLimit && hasRemaining {
 		used = limit - remaining
+		usedDerived = true
 	}
-	return &KimiUsageDetail{
-		Used:      used,
-		Limit:     limit,
-		Remaining: remaining,
-		Name:      stringField(object, "name"),
-		Title:     stringField(object, "title"),
-		ResetAt:   stringField(object, "resetAt", "reset_at", "resetTime", "reset_time"),
-		ResetIn:   floatField(object, "resetIn", "reset_in"),
-		TTL:       floatField(object, "ttl"),
+	detail := &KimiUsageDetail{
+		Used:             used,
+		Limit:            limit,
+		Remaining:        remaining,
+		Name:             stringField(object, "name"),
+		Title:            stringField(object, "title"),
+		ResetAt:          stringField(object, "resetAt", "reset_at", "resetTime", "reset_time"),
+		ResetIn:          floatField(object, "resetIn", "reset_in"),
+		TTL:              floatField(object, "ttl"),
+		rawPresenceKnown: true,
+		usedPresent:      hasUsed,
+		usedDerived:      usedDerived,
+		limitPresent:     hasLimit,
+		remainingPresent: hasRemaining,
+		resetAtRaw:       rawScalarField(object, "resetAt", "reset_at", "resetTime", "reset_time"),
 	}
+	if value := floatPtrField(object, "resetIn", "reset_in"); value != nil {
+		detail.resetInPresent = true
+	}
+	return detail
 }
 
 func parseKimiLimitWindow(object map[string]json.RawMessage) *KimiLimitWindow {
@@ -572,6 +647,21 @@ func stringField(object map[string]json.RawMessage, keys ...string) string {
 				return number.String()
 			}
 		}
+	}
+	return ""
+}
+
+func rawScalarField(object map[string]json.RawMessage, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := object[key]
+		if !ok || rawJSONNull(raw) {
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(raw, &text); err == nil {
+			return text
+		}
+		return strings.TrimSpace(string(raw))
 	}
 	return ""
 }

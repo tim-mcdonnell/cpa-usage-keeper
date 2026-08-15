@@ -9,19 +9,23 @@ import (
 const codexHeaderSnapshotValueMaxLength = 4096
 
 type UsageHeaderSnapshotInput struct {
-	AuthType   string
-	AuthIndex  string
-	Provider   string
-	ObservedAt time.Time
-	Headers    http.Header
+	AuthType           string
+	AuthIndex          string
+	Provider           string
+	ObservedAt         time.Time
+	TriggeringEventID  int64
+	TriggeringEventKey string
+	Headers            http.Header
 }
 
 type UsageHeaderSnapshot struct {
-	AuthType   string
-	AuthIndex  string
-	Provider   string
-	ObservedAt time.Time
-	Headers    http.Header
+	AuthType           string
+	AuthIndex          string
+	Provider           string
+	ObservedAt         time.Time
+	TriggeringEventID  int64
+	TriggeringEventKey string
+	Headers            http.Header
 }
 
 type UsageHeaderSnapshotAppender interface {
@@ -58,11 +62,13 @@ func (codexUsageHeaderSnapshotProcessor) TryBuildUsageHeaderSnapshot(input Usage
 		return nil, false
 	}
 	return &UsageHeaderSnapshot{
-		AuthType:   authType,
-		AuthIndex:  authIndex,
-		Provider:   strings.TrimSpace(input.Provider),
-		ObservedAt: input.ObservedAt,
-		Headers:    headers,
+		AuthType:           authType,
+		AuthIndex:          authIndex,
+		Provider:           strings.TrimSpace(input.Provider),
+		ObservedAt:         input.ObservedAt,
+		TriggeringEventID:  input.TriggeringEventID,
+		TriggeringEventKey: strings.TrimSpace(input.TriggeringEventKey),
+		Headers:            headers,
 	}, true
 }
 

@@ -12,6 +12,7 @@ import (
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
+	"cpa-usage-keeper/internal/timeutil"
 
 	"gorm.io/gorm"
 )
@@ -70,6 +71,8 @@ type Service struct {
 	usageHeaderMu            sync.Mutex
 	usageHeaderClosing       bool
 	usageHeaderCloseOnce     sync.Once
+
+	observationRecorder *quotaObservationRecorder
 }
 
 type CheckRequest struct {
@@ -131,6 +134,11 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		usageHeaderFlushInterval:   usageHeaderFlushInterval,
 		usageHeaderNewTimer:        newUsageHeaderTimer,
 	}
+	service.observationRecorder = newQuotaObservationRecorder(
+		repositoryQuotaObservationStore{db: db},
+		pricingCatalog,
+		quotaObservationQueueSize,
+	)
 	go service.runUsageHeaderSnapshotWorker()
 	return service
 }
@@ -207,32 +215,53 @@ func (s *Service) StopRefreshTasks() {
 	}
 	s.stopUsageHeaderSnapshotWorker()
 	s.refreshWG.Wait()
+	s.observationRecorder.stop()
 }
 
 func (s *Service) Check(ctx context.Context, request CheckRequest) (CheckResponse, error) {
+	snapshot, err := s.checkWithSnapshot(ctx, request)
+	if err != nil {
+		return CheckResponse{}, err
+	}
+	return snapshot.response, nil
+}
+
+type quotaCheckSnapshot struct {
+	response   CheckResponse
+	identity   entities.UsageIdentity
+	provider   string
+	observedAt time.Time
+}
+
+func (s *Service) checkWithSnapshot(ctx context.Context, request CheckRequest) (quotaCheckSnapshot, error) {
 	// 单条查询以 auth_index 为唯一入口，前端不需要知道具体 provider 的 API 细节。
 	authIndex := strings.TrimSpace(request.AuthIndex)
 	if authIndex == "" {
-		return CheckResponse{}, fmt.Errorf("%w: auth_index is required", ErrValidation)
+		return quotaCheckSnapshot{}, fmt.Errorf("%w: auth_index is required", ErrValidation)
 	}
 	// 只允许 auth files 身份查询限额，AI provider 身份不进入 provider 调用链路。
 	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(ctx, s.db, authIndex)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return CheckResponse{}, fmt.Errorf("%w: %s", ErrNotFound, authIndex)
+			return quotaCheckSnapshot{}, fmt.Errorf("%w: %s", ErrNotFound, authIndex)
 		}
-		return CheckResponse{}, err
+		return quotaCheckSnapshot{}, err
 	}
 	// 按相邻项目规则先匹配 provider 再匹配 type，解析出实际要调用的 quota handler。
-	_, handler, ok := s.resolveQuotaHandlerForIdentity(identity)
+	resolvedProvider, handler, ok := s.resolveQuotaHandlerForIdentity(identity)
 	if !ok {
-		return CheckResponse{}, fmt.Errorf("%w: %s", ErrUnsupportedType, normalizeIdentityType(identity.Provider))
+		return quotaCheckSnapshot{}, fmt.Errorf("%w: %s", ErrUnsupportedType, normalizeIdentityType(identity.Provider))
 	}
 	// provider 返回各自原始结构后，再统一转换为前端可复用的 quota rows。
 	providerOutput, err := handler.Check(ctx, ProviderInput{Identity: identity})
 	if err != nil {
-		return CheckResponse{}, err
+		return quotaCheckSnapshot{}, err
 	}
+	provider := normalizeIdentityType(providerOutput.Provider)
+	if provider == "" {
+		provider = resolvedProvider
+	}
+	observedAt := timeutil.NormalizeStorageTime(time.Now())
 	response := CheckResponse{
 		ID:           authIndex,
 		Quota:        NormalizeQuotaRows(providerOutput),
@@ -246,7 +275,12 @@ func (s *Service) Check(ctx context.Context, request CheckRequest) (CheckRespons
 	if count, ok := rateLimitResetCreditsAvailableCount(providerOutput); ok {
 		response.RateLimitResetCreditsAvailableCount = count
 	}
-	return response, nil
+	return quotaCheckSnapshot{
+		response:   response,
+		identity:   identity,
+		provider:   provider,
+		observedAt: observedAt,
+	}, nil
 }
 
 func (s *Service) resolveQuotaHandler(provider string, identityType string) (string, ProviderHandler, bool) {

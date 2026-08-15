@@ -22,5 +22,6 @@ func All() []any {
 		&UsageLatencyStat{},
 		&AuthSession{},
 		&AppSetting{},
+		&QuotaObservation{},
 	}
 }

@@ -125,6 +125,7 @@ func (s *Service) flushPendingUsageHeaderSnapshots() {
 func mergePendingUsageHeaderSnapshots(pending map[string]UsageHeaderSnapshot, snapshots []UsageHeaderSnapshot) {
 	rejected := 0
 	// 遍历本次入队批次，把同一 flush 窗口内的快照合并到 pending map。
+	// 被覆盖的快照不进入 recorder；采样合同只记录这个间隔最终存活的快照。
 	for _, snapshot := range snapshots {
 		// 优先按 auth_index 合并，保证同一 Codex Auth File 只保留最新进度。
 		authIndex := strings.TrimSpace(snapshot.AuthIndex)
@@ -200,10 +201,6 @@ func (s *Service) applyUsageHeaderSnapshots(ctx context.Context, snapshots []Usa
 	}
 	// header quota 还要补本地窗口 token/cost，因此每批复用一个窗口统计 provider。
 	statsProvider := s.usageHeaderWindowStatsProvider(ctx)
-	if statsProvider == nil {
-		// 批量 header 更新必须与窗口 token/cost 使用同一统计基础；统计器不可用时整批跳过，避免写入半套 cache。
-		return
-	}
 	// 先构造身份 job；缺失或非 Codex 身份在主 goroutine 过滤，worker 只处理明确归属的账号。
 	type usageHeaderSnapshotJob struct {
 		snapshot UsageHeaderSnapshot
@@ -387,6 +384,10 @@ func (s *Service) applyUsageHeaderSnapshotWithIdentity(ctx context.Context, snap
 		Quota:        NormalizeQuotaRows(output),
 		Subscription: NormalizeSubscription(output),
 	}
+	// Header 未携带套餐时使用同一订阅 contract 的身份 metadata 回退，避免 recorder 重新读取已移除的 row planType。
+	if response.Subscription == nil {
+		response.Subscription = ResolveIdentitySubscription(identity)
+	}
 	// 没有可展示 quota row 时不写空 cache，避免覆盖已有有效结果。
 	if len(response.Quota) == 0 {
 		return false
@@ -401,6 +402,18 @@ func (s *Service) applyUsageHeaderSnapshotWithIdentity(ctx context.Context, snap
 	if observedAt.IsZero() {
 		observedAt = timeutil.NormalizeStorageTime(time.Now())
 	}
+	// Observation 只使用当前 header 实际携带的 rows，并在 cache freshness 检查和任何字段级 merge 之前入队。
+	// 这保留 stale header 事实，也防止旧 poll 字段伪装成 header provenance。
+	reading := newQuotaHeaderReading(
+		identity,
+		output.Provider,
+		observedAt,
+		snapshot.TriggeringEventID,
+		snapshot.TriggeringEventKey,
+		response.Subscription,
+		response.Quota,
+	)
+	s.observationRecorder.enqueue(reading)
 	// active task 或更新的 completed cache 已存在时，当前 header snapshot 不应覆盖它。
 	if !s.shouldProcessUsageHeaderQuotaSnapshot(authIndex, observedAt) {
 		return false

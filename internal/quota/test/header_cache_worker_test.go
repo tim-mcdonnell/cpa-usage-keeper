@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -403,6 +404,202 @@ func TestApplyUsageHeaderSnapshotDoesNotOverwriteNewerCompletedCache(t *testing.
 	task := refreshTasks(service)["codex-auth"]
 	if task.Quota == nil || len(task.Quota.Quota) != 1 || task.Quota.Quota[0].UsedPercent == nil || *task.Quota.Quota[0].UsedPercent != 90 {
 		t.Fatalf("expected newer cache to remain unchanged, got %+v", task)
+	}
+}
+
+func TestApplyUsageHeaderSnapshotRecordsRawHeaderRowsBeforeStalenessAndMerge(t *testing.T) {
+	db := openQuotaTestDatabase(t)
+	seedUsageIdentity(t, db, entities.UsageIdentity{
+		Identity:     "codex-auth",
+		Provider:     "codex",
+		Type:         "codex",
+		AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+		AuthTypeName: "oauth",
+	})
+	observedAt := time.Date(2026, 6, 22, 11, 0, 0, 0, time.Local)
+	seedUsageEvent(t, db, entities.UsageEvent{
+		EventKey:            "header-trigger",
+		AuthType:            "oauth",
+		AuthIndex:           "codex-auth",
+		Model:               "unpriced-header-model",
+		Timestamp:           observedAt,
+		InputTokens:         10,
+		OutputTokens:        20,
+		CacheReadTokens:     30,
+		CacheCreationTokens: 40,
+		TotalTokens:         100,
+	})
+	var triggerEvent entities.UsageEvent
+	if err := db.Where("event_key = ?", "header-trigger").Take(&triggerEvent).Error; err != nil {
+		t.Fatalf("load triggering usage event: %v", err)
+	}
+	var identity entities.UsageIdentity
+	if err := db.Where("identity = ?", "codex-auth").Take(&identity).Error; err != nil {
+		t.Fatalf("load quota identity: %v", err)
+	}
+	headerResetAt := observedAt.Add(4 * time.Hour)
+	newerObservedAt := observedAt.Add(time.Hour)
+	newerUsedPercent := 80.0
+	windowSeconds := int64(5 * 60 * 60)
+	resetRaw := strconv.FormatInt(headerResetAt.Unix(), 10)
+	if err := db.Create(&entities.QuotaObservation{
+		UsageIdentityID:     identity.ID,
+		AuthType:            "oauth",
+		AuthIndex:           "codex-auth",
+		Provider:            "codex",
+		WindowKindID:        "codex/overall/rate_limit/18000",
+		QuotaKey:            "rate_limit.primary_window",
+		Scope:               "window",
+		WindowRole:          "primary",
+		WindowSeconds:       &windowSeconds,
+		ObservedAt:          newerObservedAt,
+		Source:              string(RefreshSourceManual),
+		UsedPercent:         &newerUsedPercent,
+		PercentSource:       "reported",
+		ResetAt:             &headerResetAt,
+		ResetRaw:            &resetRaw,
+		PricingSnapshotHash: "newer-poll-pricing",
+		CreatedAt:           newerObservedAt,
+	}).Error; err != nil {
+		t.Fatalf("seed newer poll observation: %v", err)
+	}
+	service := NewServiceWithRegistry(db, NewProviderRegistry(nil), emptyPricingCatalogForTest())
+	oldUsed := 80.0
+	oldLimit := 100.0
+	oldTokens := int64(999)
+	oldCost := 9.9
+	setRefreshTask(service, "codex-auth", &RefreshTaskRecord{
+		AuthIndex:   "codex-auth",
+		Status:      RefreshTaskStatusCompleted,
+		Source:      RefreshSourceManual,
+		RefreshedAt: newerObservedAt,
+		Quota: &CheckResponse{
+			ID: "codex-auth",
+			Quota: []QuotaRow{
+				{
+					Key:               "rate_limit.primary_window",
+					Label:             "Manual 5h",
+					Scope:             "window",
+					Used:              &oldUsed,
+					Limit:             &oldLimit,
+					WindowUsageTokens: &oldTokens,
+					WindowUsageCost:   &oldCost,
+				},
+				{
+					Key:         "rate_limit.secondary_window",
+					Label:       "Weekly",
+					Scope:       "window",
+					UsedPercent: floatPtr(50),
+				},
+			},
+		},
+	})
+
+	applied := applyUsageHeaderSnapshot(service, context.Background(), UsageHeaderSnapshot{
+		AuthType:           "oauth",
+		AuthIndex:          "codex-auth",
+		Provider:           "codex",
+		ObservedAt:         observedAt,
+		TriggeringEventID:  triggerEvent.ID,
+		TriggeringEventKey: "header-trigger",
+		Headers: http.Header{
+			"X-Codex-Plan-Type":              []string{"pro"},
+			"X-Codex-Primary-Used-Percent":   []string{"4"},
+			"X-Codex-Primary-Window-Minutes": []string{"300"},
+			"X-Codex-Primary-Reset-At":       []string{resetRaw},
+		},
+	})
+	if applied {
+		t.Fatal("expected stale header snapshot to leave newer cache unchanged")
+	}
+	service.StopRefreshTasks()
+
+	var observations []entities.QuotaObservation
+	if err := db.
+		Where("source = ?", string(RefreshSourceUsageHeader)).
+		Order("id asc").
+		Find(&observations).Error; err != nil {
+		t.Fatalf("load header observations: %v", err)
+	}
+	if len(observations) != 1 {
+		t.Fatalf("expected only the header-present primary row, got %+v", observations)
+	}
+	observation := observations[0]
+	if observation.Source != string(RefreshSourceUsageHeader) ||
+		!observation.ObservedAt.Equal(observedAt) ||
+		observation.TriggeringEventKey == nil ||
+		*observation.TriggeringEventKey != "header-trigger" ||
+		observation.QuotaKey != "rate_limit.primary_window" ||
+		observation.UsedPercent == nil ||
+		*observation.UsedPercent != 4 {
+		t.Fatalf("unexpected header observation provenance: %+v", observation)
+	}
+	if observation.Used != nil ||
+		observation.LimitValue != nil ||
+		observation.ProviderWindowTokens != nil ||
+		observation.ProviderWindowCost != nil {
+		t.Fatalf("cache-merged poll fields contaminated header observation: %+v", observation)
+	}
+	if observation.AttributedTokens == nil ||
+		*observation.AttributedTokens != 100 ||
+		observation.AttributedInputTokens == nil ||
+		*observation.AttributedInputTokens != 10 ||
+		observation.AttributedOutputTokens == nil ||
+		*observation.AttributedOutputTokens != 20 ||
+		observation.AttributedCacheReadTokens == nil ||
+		*observation.AttributedCacheReadTokens != 30 ||
+		observation.AttributedCacheCreationTokens == nil ||
+		*observation.AttributedCacheCreationTokens != 40 ||
+		observation.AttributedCostComplete {
+		t.Fatalf("triggering event attribution was incomplete or missing: %+v", observation)
+	}
+	cache := refreshTaskRecord(service, "codex-auth")
+	if cache == nil ||
+		cache.Quota == nil ||
+		len(cache.Quota.Quota) != 2 ||
+		cache.Quota.Quota[0].Used == nil ||
+		*cache.Quota.Quota[0].Used != oldUsed {
+		t.Fatalf("stale header changed the newer cache: %+v", cache)
+	}
+}
+
+func TestApplyUsageHeaderObservationInsertFailureDoesNotBlockCacheProcessing(t *testing.T) {
+	db := openQuotaTestDatabase(t)
+	seedUsageIdentity(t, db, entities.UsageIdentity{
+		Identity:     "codex-auth",
+		Provider:     "codex",
+		Type:         "codex",
+		AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+		AuthTypeName: "oauth",
+	})
+	insertAttempted := make(chan struct{}, 1)
+	callbackName := "test:fail_header_quota_observation_insert"
+	if err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Schema != nil && tx.Statement.Schema.Name == "QuotaObservation" {
+			select {
+			case insertAttempted <- struct{}{}:
+			default:
+			}
+			tx.AddError(errors.New("forced header observation insert failure"))
+		}
+	}); err != nil {
+		t.Fatalf("register observation failure callback: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(callbackName) })
+	service := NewServiceWithRegistry(db, NewProviderRegistry(nil), emptyPricingCatalogForTest())
+	defer service.StopRefreshTasks()
+
+	if !applyUsageHeaderSnapshot(service, context.Background(), codexUsageHeaderSnapshot("codex-auth", time.Now(), "4")) {
+		t.Fatal("expected cache processing to succeed before asynchronous observation failure")
+	}
+	cache, err := service.GetCachedQuota(context.Background(), CacheRequest{AuthIndexes: []string{"codex-auth"}})
+	if err != nil || len(cache.Items) != 1 || cache.Items[0].Status != RefreshTaskStatusCompleted {
+		t.Fatalf("expected completed cache despite observation failure, cache=%+v err=%v", cache, err)
+	}
+	select {
+	case <-insertAttempted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for asynchronous header observation insert failure")
 	}
 }
 
@@ -1064,6 +1261,8 @@ func TestTryAppendUsageHeaderSnapshotsKeepsLatestPendingSnapshotPerAuthIndex(t *
 	defer service.StopRefreshTasks()
 	older := codexUsageHeaderSnapshot("codex-auth", time.Date(2026, 6, 22, 11, 0, 0, 0, time.Local), "4")
 	newer := codexUsageHeaderSnapshot("codex-auth", time.Date(2026, 6, 22, 11, 0, 10, 0, time.Local), "9")
+	older.TriggeringEventKey = "old-trigger"
+	newer.TriggeringEventKey = "new-trigger"
 
 	if !service.TryAppendUsageHeaderSnapshots([]UsageHeaderSnapshot{older}) {
 		t.Fatal("expected older snapshot append to be accepted")
@@ -1079,6 +1278,17 @@ func TestTryAppendUsageHeaderSnapshotsKeepsLatestPendingSnapshotPerAuthIndex(t *
 	}
 	if task.Quota == nil || len(task.Quota.Quota) != 1 || task.Quota.Quota[0].UsedPercent == nil || *task.Quota.Quota[0].UsedPercent != 9 {
 		t.Fatalf("expected latest pending snapshot to win, got %+v", task)
+	}
+	var observations []entities.QuotaObservation
+	if err := db.Order("id asc").Find(&observations).Error; err != nil {
+		t.Fatalf("load coalesced header observations: %v", err)
+	}
+	if len(observations) != 1 ||
+		observations[0].UsedPercent == nil ||
+		*observations[0].UsedPercent != 9 ||
+		observations[0].TriggeringEventKey == nil ||
+		*observations[0].TriggeringEventKey != "new-trigger" {
+		t.Fatalf("expected only final worker-interval snapshot to be recordable, got %+v", observations)
 	}
 }
 

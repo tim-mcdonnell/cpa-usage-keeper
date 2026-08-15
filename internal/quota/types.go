@@ -71,6 +71,11 @@ type QuotaRow struct {
 	ResetAfterSeconds *int64       `json:"resetAfterSeconds,omitempty"`
 	WindowUsageTokens *int64       `json:"window_usage_tokens,omitempty"`
 	WindowUsageCost   *float64     `json:"window_usage_cost,omitempty"`
+	// Observation-only provenance stays out of the existing quota cache API.
+	PercentSource string `json:"-"`
+	ResetRaw      string `json:"-"`
+	WindowRole    string `json:"-"`
+	StableLimitID string `json:"-"`
 }
 
 type AntigravityQuotaBucket struct {
@@ -79,6 +84,8 @@ type AntigravityQuotaBucket struct {
 	Window            string   `json:"window,omitempty"`
 	RemainingFraction *float64 `json:"remainingFraction,omitempty"`
 	ResetTime         string   `json:"resetTime,omitempty"`
+
+	resetTimeRaw string
 }
 
 type AntigravityQuotaGroup struct {
@@ -98,6 +105,13 @@ type CodexUsageWindow struct {
 	ResetAt            int64    `json:"resetAt,omitempty"`
 	WindowUsageTokens  *int64   `json:"window_usage_tokens,omitempty"`
 	WindowUsageCost    *float64 `json:"window_usage_cost,omitempty"`
+
+	rawPresenceKnown          bool
+	usedPercentPresent        bool
+	limitWindowSecondsPresent bool
+	resetAfterSecondsPresent  bool
+	resetAtPresent            bool
+	resetAtRaw                string
 }
 
 type CodexRateLimitInfo struct {
@@ -138,6 +152,11 @@ type GeminiCliQuotaBucket struct {
 	RemainingFraction float64 `json:"remainingFraction,omitempty"`
 	RemainingAmount   float64 `json:"remainingAmount,omitempty"`
 	ResetTime         string  `json:"resetTime,omitempty"`
+
+	rawPresenceKnown         bool
+	remainingFractionPresent bool
+	remainingAmountPresent   bool
+	resetTimeRaw             string
 }
 
 type GeminiCliQuotaPayload struct {
@@ -147,6 +166,9 @@ type GeminiCliQuotaPayload struct {
 type GeminiCliCredits struct {
 	CreditType   string  `json:"creditType,omitempty"`
 	CreditAmount float64 `json:"creditAmount,omitempty"`
+
+	rawPresenceKnown    bool
+	creditAmountPresent bool
 }
 
 type GeminiCliUserTier struct {
@@ -169,6 +191,10 @@ type AntigravitySubscriptionPayload struct {
 type ClaudeUsageWindow struct {
 	Utilization float64 `json:"utilization,omitempty"`
 	ResetsAt    string  `json:"resetsAt,omitempty"`
+
+	rawPresenceKnown   bool
+	utilizationPresent bool
+	resetsAtRaw        string
 }
 
 type ClaudeExtraUsage struct {
@@ -176,6 +202,10 @@ type ClaudeExtraUsage struct {
 	MonthlyLimit float64  `json:"monthlyLimit,omitempty"`
 	UsedCredits  float64  `json:"usedCredits,omitempty"`
 	Utilization  *float64 `json:"utilization,omitempty"`
+
+	rawPresenceKnown    bool
+	monthlyLimitPresent bool
+	usedCreditsPresent  bool
 }
 
 type ClaudeUsagePayload struct {
@@ -222,6 +252,13 @@ type KimiUsageDetail struct {
 	ResetAt   string  `json:"resetAt,omitempty"`
 	ResetIn   float64 `json:"resetIn,omitempty"`
 	TTL       float64 `json:"ttl,omitempty"`
+
+	rawPresenceKnown bool
+	usedPresent      bool
+	limitPresent     bool
+	remainingPresent bool
+	resetInPresent   bool
+	resetAtRaw       string
 }
 
 type KimiLimitWindow struct {
@@ -243,6 +280,13 @@ type KimiLimitItem struct {
 	ResetAt   string           `json:"resetAt,omitempty"`
 	ResetIn   float64          `json:"resetIn,omitempty"`
 	TTL       float64          `json:"ttl,omitempty"`
+
+	rawPresenceKnown bool
+	usedPresent      bool
+	limitPresent     bool
+	remainingPresent bool
+	resetInPresent   bool
+	resetAtRaw       string
 }
 
 type KimiUsagePayload struct {
@@ -258,6 +302,8 @@ type XAIBillingPeriod struct {
 	Type  string `json:"type,omitempty"`
 	Start string `json:"start,omitempty"`
 	End   string `json:"end,omitempty"`
+
+	endRaw string
 }
 
 type XAIBillingProductUsage struct {
@@ -288,6 +334,8 @@ type XAIBillingConfig struct {
 	BillingPeriodStart string                   `json:"billingPeriodStart,omitempty"`
 	BillingPeriodEnd   string                   `json:"billingPeriodEnd,omitempty"`
 	History            []XAIBillingHistoryItem  `json:"history,omitempty"`
+
+	billingPeriodEndRaw string
 }
 
 type XAIBillingPayload struct {

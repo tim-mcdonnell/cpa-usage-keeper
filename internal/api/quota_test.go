@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"cpa-usage-keeper/internal/auth"
+	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/quota"
 )
 
@@ -26,12 +28,23 @@ type quotaProviderStub struct {
 	cacheRequest             quota.CacheRequest
 	cacheResponse            quota.CacheResponse
 	cacheErr                 error
+	observationRequest       quota.ObservationSeriesRequest
+	observationResponse      quota.ObservationSeriesResponse
+	observationErr           error
 	inspectionStatusResponse quota.InspectionStatus
 	inspectionStatusErr      error
 	inspectionStartResponse  quota.InspectionStatus
 	inspectionStartErr       error
 	inspectionStatusCalls    int
 	inspectionStartCalls     int
+}
+
+func (s *quotaProviderStub) ListObservations(ctx context.Context, request quota.ObservationSeriesRequest) (quota.ObservationSeriesResponse, error) {
+	s.observationRequest = request
+	if s.observationErr != nil {
+		return quota.ObservationSeriesResponse{}, s.observationErr
+	}
+	return s.observationResponse, nil
 }
 
 func (s *quotaProviderStub) GetResetCredits(ctx context.Context, request quota.ResetCreditsRequest) (quota.ResetCreditsResponse, error) {
@@ -117,6 +130,106 @@ func TestQuotaCacheReturnsCachedCurrentPageQuota(t *testing.T) {
 	body := resp.Body.String()
 	if !contains(body, `"items"`) || !contains(body, `"file_name":"claude-user.json"`) || !contains(body, `"refreshed_at":"2026-05-26T12:00:00Z"`) || contains(body, `"updated_at"`) || !contains(body, `"id":"auth-1"`) || !contains(body, `"label":"Weekly"`) || !contains(body, `"subscription":{"provider":"codex","plan":"plus"}`) || contains(body, `"planType"`) {
 		t.Fatalf("unexpected response body: %s", body)
+	}
+}
+
+func TestQuotaObservationsForwardsRequiredSeriesAndReturnsTruncationMarker(t *testing.T) {
+	observedAt := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	provider := &quotaProviderStub{observationResponse: quota.ObservationSeriesResponse{
+		Items: []entities.QuotaObservation{{
+			ID:           1,
+			AuthIndex:    "auth-1",
+			WindowKindID: "codex/overall/rate_limit/18000",
+			ObservedAt:   observedAt,
+		}},
+		Truncated: true,
+	}}
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: provider})
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/quota/observations?auth_index=auth-1&window_kind_id=codex%2Foverall%2Frate_limit%2F18000&start=2026-07-01T00%3A00%3A00Z&end=2026-07-24T00%3A00%3A00Z",
+		nil,
+	)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if provider.observationRequest.AuthIndex != "auth-1" ||
+		provider.observationRequest.WindowKindID != "codex/overall/rate_limit/18000" ||
+		provider.observationRequest.Start.IsZero() ||
+		provider.observationRequest.End.IsZero() {
+		t.Fatalf("unexpected observation request: %+v", provider.observationRequest)
+	}
+	body := resp.Body.String()
+	if !contains(body, `"truncated":true`) ||
+		!contains(body, `"window_kind_id":"codex/overall/rate_limit/18000"`) ||
+		!contains(body, `"observed_at":"2026-07-23T12:00:00Z"`) {
+		t.Fatalf("unexpected observation response: %s", body)
+	}
+}
+
+func TestQuotaObservationsRejectsMissingMalformedAndInvalidRange(t *testing.T) {
+	testCases := []struct {
+		name     string
+		path     string
+		provider *quotaProviderStub
+	}{
+		{
+			name:     "missing credential",
+			path:     "/api/v1/quota/observations?window_kind_id=kind&start=2026-07-01T00%3A00%3A00Z&end=2026-07-02T00%3A00%3A00Z",
+			provider: &quotaProviderStub{},
+		},
+		{
+			name:     "malformed start",
+			path:     "/api/v1/quota/observations?auth_index=auth-1&window_kind_id=kind&start=nope&end=2026-07-02T00%3A00%3A00Z",
+			provider: &quotaProviderStub{},
+		},
+		{
+			name:     "range over ninety days",
+			path:     "/api/v1/quota/observations?auth_index=auth-1&window_kind_id=kind&start=2026-01-01T00%3A00%3A00Z&end=2026-07-02T00%3A00%3A00Z",
+			provider: &quotaProviderStub{observationErr: quota.ErrValidation},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: testCase.provider})
+			req := httptest.NewRequest(http.MethodGet, testCase.path, nil)
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d body=%s", resp.Code, resp.Body.String())
+			}
+		})
+	}
+}
+
+func TestQuotaObservationsRejectsAPIKeyViewer(t *testing.T) {
+	sessions := auth.NewSessionManager(time.Hour)
+	viewerToken, _, err := sessions.CreateAPIKeyViewer(42)
+	if err != nil {
+		t.Fatalf("CreateAPIKeyViewer returned error: %v", err)
+	}
+	config := AuthConfig{Enabled: true, LoginPassword: "secret", SessionTTL: time.Hour}
+	provider := &quotaProviderStub{}
+	router := NewRouter(nil, nil, nil, nil, config, NewAuthHandler(config, sessions), "", OptionalProviders{Quota: provider})
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/quota/observations?auth_index=auth-1&window_kind_id=kind&start=2026-07-01T00%3A00%3A00Z&end=2026-07-02T00%3A00%3A00Z",
+		nil,
+	)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: viewerToken})
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected API key viewer to receive 403, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !provider.observationRequest.Start.IsZero() {
+		t.Fatalf("provider must not be called for viewer, got %+v", provider.observationRequest)
 	}
 }
 

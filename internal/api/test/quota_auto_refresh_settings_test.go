@@ -30,6 +30,10 @@ func (s *quotaAutoRefreshSettingsProviderStub) GetCachedQuota(context.Context, q
 	return quota.CacheResponse{}, nil
 }
 
+func (s *quotaAutoRefreshSettingsProviderStub) ListObservations(context.Context, quota.ObservationSeriesRequest) (quota.ObservationSeriesResponse, error) {
+	return quota.ObservationSeriesResponse{}, nil
+}
+
 func (s *quotaAutoRefreshSettingsProviderStub) GetInspectionStatus(context.Context) (quota.InspectionStatus, error) {
 	return quota.InspectionStatus{}, nil
 }

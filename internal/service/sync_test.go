@@ -438,14 +438,31 @@ func TestProcessRedisUsageInboxForwardsRawUsageHeaderSnapshotsToQuotaWorker(t *t
 	if appender.calls != 1 || len(appender.snapshots) != 3 {
 		t.Fatalf("expected three raw snapshots for quota-side coalescing, got calls=%d snapshots=%+v", appender.calls, appender.snapshots)
 	}
-	if appender.snapshots[0].AuthIndex != "codex-auth" || appender.snapshots[0].Headers.Get("X-Codex-Primary-Used-Percent") != "4" {
-		t.Fatalf("expected first duplicate identity snapshot to remain raw, got %+v", appender.snapshots[0])
+	wantSnapshots := []struct {
+		authIndex string
+		used      string
+		eventKey  string
+	}{
+		{authIndex: "codex-auth", used: "4", eventKey: "header-quota-old"},
+		{authIndex: "codex-auth", used: "8", eventKey: "header-quota-new"},
+		{authIndex: "other-codex-auth", used: "20", eventKey: "header-quota-other"},
 	}
-	if appender.snapshots[1].AuthIndex != "codex-auth" || appender.snapshots[1].Headers.Get("X-Codex-Primary-Used-Percent") != "8" {
-		t.Fatalf("expected newer duplicate identity snapshot to remain raw, got %+v", appender.snapshots[1])
-	}
-	if appender.snapshots[2].AuthIndex != "other-codex-auth" || appender.snapshots[2].Headers.Get("X-Codex-Primary-Used-Percent") != "20" {
-		t.Fatalf("expected other identity snapshot to preserve order, got %+v", appender.snapshots[2])
+	for index, want := range wantSnapshots {
+		snapshot := appender.snapshots[index]
+		if snapshot.AuthIndex != want.authIndex ||
+			snapshot.Headers.Get("X-Codex-Primary-Used-Percent") != want.used ||
+			snapshot.TriggeringEventID <= 0 ||
+			snapshot.TriggeringEventKey != want.eventKey {
+			t.Fatalf("unexpected raw header snapshot at index %d: %+v", index, snapshot)
+		}
+		var triggeringEvent entities.UsageEvent
+		if err := db.First(&triggeringEvent, snapshot.TriggeringEventID).Error; err != nil {
+			t.Fatalf("load %s triggering event: %v", want.authIndex, err)
+		}
+		if triggeringEvent.EventKey != snapshot.TriggeringEventKey ||
+			triggeringEvent.AuthIndex != snapshot.AuthIndex {
+			t.Fatalf("snapshot did not preserve exact triggering row: snapshot=%+v event=%+v", snapshot, triggeringEvent)
+		}
 	}
 }
 
