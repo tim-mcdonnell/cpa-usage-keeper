@@ -76,6 +76,7 @@ type QuotaRow struct {
 	ResetRaw      string `json:"-"`
 	WindowRole    string `json:"-"`
 	StableLimitID string `json:"-"`
+	UsedDerived   bool   `json:"-"`
 }
 
 type AntigravityQuotaBucket struct {
@@ -255,6 +256,7 @@ type KimiUsageDetail struct {
 
 	rawPresenceKnown bool
 	usedPresent      bool
+	usedDerived      bool
 	limitPresent     bool
 	remainingPresent bool
 	resetInPresent   bool

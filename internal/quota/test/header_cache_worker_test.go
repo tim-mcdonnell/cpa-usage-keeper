@@ -21,6 +21,7 @@ import (
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func TestApplyUsageHeaderSnapshotWritesCompletedCacheWithWindowUsageStats(t *testing.T) {
@@ -1207,7 +1208,18 @@ func TestApplyUsageHeaderSnapshotsProcessesAtMostTwoIdentitiesConcurrently(t *te
 	release := make(chan struct{})
 	callbackName := "test:block_header_identity_usage_queries"
 	if err := db.Callback().Row().Before("gorm:row").Register(callbackName, func(tx *gorm.DB) {
-		if tx.Statement.Table != "usage_events" {
+		// The observation recorder also queries usage_events asynchronously.
+		// Count only the window-stats aggregation this test is intended to exercise.
+		whereClause, ok := tx.Statement.Clauses["WHERE"]
+		if tx.Statement.Table != "usage_events" || !ok {
+			return
+		}
+		where, ok := whereClause.Expression.(clause.Where)
+		if !ok || len(where.Exprs) == 0 {
+			return
+		}
+		firstExpression, ok := where.Exprs[0].(clause.Expr)
+		if !ok || !strings.HasPrefix(strings.TrimSpace(firstExpression.SQL), "auth_index = ?") {
 			return
 		}
 		current := active.Add(1)

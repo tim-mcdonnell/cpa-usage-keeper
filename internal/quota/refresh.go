@@ -407,7 +407,7 @@ func (s *Service) runRefreshTaskWithWorker(authIndex string) {
 		return
 	}
 	// provider 成功后立即把窗口内 token/cost 补进同一次缓存，前端读取缓存时不再触发额外统计请求。
-	reading := newQuotaReading(snapshot.identity, snapshot.provider, source, snapshot.observedAt, snapshot.response.Quota)
+	reading := newQuotaReading(snapshot.identity, snapshot.provider, source, snapshot.observedAt, snapshot.response.Subscription, snapshot.response.Quota)
 	response := s.attachWindowUsageStats(ctx, authIndex, snapshot.response, snapshot.observedAt)
 	s.observationRecorder.enqueue(reading)
 	// quota rows 和 token/cost 都准备好后，把任务切到 completed 并写入长期成功缓存。

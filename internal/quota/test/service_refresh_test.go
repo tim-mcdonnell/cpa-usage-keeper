@@ -1576,7 +1576,7 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 		},
 	)
 	setRefreshCooldown(quotaService, func(time.Duration) {})
-	aggregationRunner := poller.NewUsageAggregationRunner(db, quotaService)
+	aggregationRunner := poller.NewUsageAggregationRunner(db)
 	runnerCtx, cancelRunner := context.WithCancel(context.Background())
 	t.Cleanup(cancelRunner)
 	runnerDone := make(chan error, 1)
@@ -1587,6 +1587,7 @@ func TestQuotaObservationLoadCoexistsWithUsageIngestionPollRefreshesAndHeaderTra
 		BaseURL:                  "https://cpa.example.com",
 		Now:                      func() time.Time { return now },
 		UsageAggregationNotifier: aggregationRunner,
+		UsageHeaderQuota:         quotaService,
 	})
 
 	start := make(chan struct{})
